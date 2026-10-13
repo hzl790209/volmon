@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    FileProvider 可共享路径白名单。
+    只暴露录音目录，避免把 App 私有目录整体开放出去。
+-->
+<paths>
+    <!-- filesDir/recordings/  →  录音 WAV -->
+    <files-path name="recordings" path="recordings/" />
+</paths>

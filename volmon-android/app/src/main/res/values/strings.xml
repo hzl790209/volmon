@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">volmon</string>
+    <string name="notification_channel_name">音量监测</string>
+    <string name="notification_channel_desc">后台实时监测环境音量时在通知栏显示当前分贝</string>
+</resources>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose 工程用的平台主题（无 ActionBar，避免与 Compose 冲突）；黑绿黑客风底色 -->
+    <style name="Theme.Volmon" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#050805</item>
+        <item name="android:windowBackground">#050805</item>
+    </style>
+</resources>

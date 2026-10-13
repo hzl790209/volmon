@@ -1,0 +1,13 @@
+# Android / Gradle 本地生成物（不进仓库）
+*.iml
+.gradle/
+build/
+local.properties
+**/build/
+captures/
+.externalNativeBuild/
+.cxx/
+# 由 IDE 生成的 wrapper jar 不提交（首次打开会自动生成）
+gradle/wrapper/gradle-wrapper.jar
+# 系统/OS 文件
+.DS_Store

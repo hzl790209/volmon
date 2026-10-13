@@ -1,0 +1,1351 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>音量监控 · 实时面板</title>
+<style>
+  :root {
+    --bg: #f5f7fa; --panel: #ffffff; --ink: #1f2933; --muted: #6b7280;
+    --line: #e5e7eb; --accent: #2563eb; --red: #dc2626; --green: #16a34a;
+    --amber: #d97706;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--ink); padding: 16px 16px 52px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .hdr { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+  .hdr h1 { margin: 0; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+  .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .panel h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted); font-weight: 600; }
+  .stat-row { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 10px; }
+  .stat { min-width: 90px; }
+  .stat .v { font-size: 26px; font-weight: 700; }
+  .stat .l { font-size: 12px; color: var(--muted); }
+  canvas { width: 100%; display: block; background: #fafbfc; border: 1px solid var(--line); border-radius: 8px; }
+  #banner {
+    display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+    padding: 10px 14px; border-radius: 10px 10px 0 0; font-weight: 700; text-align: center;
+    box-shadow: 0 -2px 10px rgba(0,0,0,0.12);
+  }
+  #banner.alert { display: block; background: var(--red); color: #fff; }
+  #banner.over { display: block; background: #fee2e2; color: var(--red); border-top: 1px solid var(--red); }
+  .btns { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  button {
+    background: var(--accent); color: #fff; border: 0; padding: 7px 12px; border-radius: 8px;
+    cursor: pointer; font-size: 13px;
+  }
+  button.ghost { background: #eef2ff; color: var(--accent); }
+  input, select {
+    width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; margin: 4px 0 10px;
+  }
+  label { font-size: 12px; color: var(--muted); }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .pill.ok { background: #dcfce7; color: var(--green); }
+  .pill.bad { background: #fee2e2; color: var(--red); }
+  .pill.warn { background: #fef3c7; color: var(--amber); }
+  .pill.ver { background: #e0e7ff; color: var(--accent); font-size: 13px; padding: 3px 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  .muted { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+  <div class="hdr">
+    <h1>🔊 音量 / 噪音实时监控</h1>
+    <span id="ver" class="pill ver" title="软件版本号（来自 volmon/__init__.py）">v…</span>
+  </div>
+  <div class="sub">麦克风实时采集 · 波形 · 趋势 · 校准 · 阈值预警　|　连接状态：<span id="conn" class="pill bad">未连接</span>　|　校准：<span id="calib" class="pill warn">未校准</span></div>
+
+  <div id="banner"></div>
+
+  <div class="grid">
+    <!-- 左：实时 + 趋势 -->
+    <div>
+      <div class="panel">
+        <h2>实时音量</h2>
+        <div class="stat-row">
+          <div class="stat"><div class="v" id="cur">--</div><div class="l">当前 dB</div></div>
+          <div class="stat"><div class="v" id="raw">--</div><div class="l">原始 dBFS</div></div>
+          <div class="stat"><div class="v" id="peak">--</div><div class="l">峰值 dB</div></div>
+          <div class="stat"><div class="v" id="thr">--</div><div class="l">阈值 dB</div></div>
+        </div>
+        <canvas id="wave" height="160"></canvas>
+        <div class="muted">近 60 秒滚动波形（红色虚线为预警阈值）</div>
+        <div id="alarmStat" class="muted" style="margin-top:6px;font-weight:600;">● 监测正常</div>
+        <div id="devStat" class="muted" style="margin-top:4px;"></div>
+        <div id="micWarn" class="muted" style="margin-top:4px;"></div>
+      </div>
+
+      <div class="panel" style="margin-top:14px;">
+        <h2>历史趋势 <span class="muted" id="trendRange">(近 24 小时)</span></h2>
+        <div class="btns">
+          <button class="ghost" data-h="1">近 1 小时</button>
+          <button class="ghost" data-h="24">近 24 小时</button>
+          <button class="ghost" data-h="168">近 7 天</button>
+        </div>
+        <canvas id="trend" height="200"></canvas>
+        <div class="muted" id="trendStat"></div>
+      </div>
+    </div>
+
+    <!-- 右：控制 -->
+    <div>
+      <div class="panel">
+        <h2>当前生效策略</h2>
+        <div id="policyBox" class="muted">读取中…</div>
+        <div class="btns"><button class="ghost" id="refreshPolicy">刷新</button></div>
+      </div>
+
+      <div class="panel" style="margin-top:14px;">
+        <h2>校准（专业设备对齐）</h2>
+        <label>用专业声级计测得的环境真实 dB</label>
+        <input id="meas" type="number" step="0.1" placeholder="例如 65.0" />
+        <button id="calBtn">一键校准</button>
+        <div class="muted" id="calInfo">未校准时显示的是<b>估算声压级</b>（dBFS + 参考偏移 90），仅供趋势参考；用专业设备「一键校准」后即为真实 dB SPL。</div>
+      </div>
+
+      <div class="panel" style="margin-top:14px;">
+        <h2>预警设置</h2>
+        <label>预警阈值 (dB)</label>
+        <input id="f_threshold" type="number" step="0.5" />
+        <label>持续触发时长 (秒，避免瞬时误报)</label>
+        <input id="f_sustain" type="number" step="0.5" />
+        <label>实时广播间隔 (ms)</label>
+        <input id="f_sample" type="number" step="50" />
+        <label>采样落库频率 (ms)</label>
+        <input id="f_log" type="number" step="100" />
+        <label>输入设备（麦克风）</label>
+        <select id="f_device"></select>
+        <div class="btns">
+          <button class="ghost" id="rescanDev">🔄 刷新输入设备列表</button>
+        </div>
+        <div class="muted" id="devInfo">插入 USB 声卡/耳机后若列表里没有新设备，点「刷新」即可（会短暂中断采集约 1 秒），无需重启服务。</div>
+        <button id="saveBtn">保存设置</button>
+        <div class="muted" id="saveInfo"></div>
+      </div>
+
+      <div class="panel" style="margin-top:14px;">
+        <h2>音量报警（电脑发声）</h2>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input id="f_alarm_enabled" type="checkbox" style="width:auto;margin:0;" />
+          开启音量报警：超阈值后电脑播放报警声
+        </label>
+        <label>报警声持续 (秒)</label>
+        <input id="f_alarm_duration" type="number" step="1" min="1" />
+        <label>报警后冷却 (秒，期间仍静默不记录)</label>
+        <input id="f_alarm_cooldown" type="number" step="0.5" min="0" />
+        <label>报警声输出设备（3.5mm 耳机 / USB 耳机 / 本机扬声器）</label>
+        <select id="f_alarm_output"></select>
+        <div class="muted" id="outStat"></div>
+        <div class="btns">
+          <button id="testAlarm">🔊 试听报警音</button>
+          <button class="ghost" id="rescanOut">🔄 刷新输出设备列表</button>
+        </div>
+        <div class="muted" id="alarmInfo">勾选/修改后<b>立即生效</b>（无需点其他面板的保存）。报警需音量<b>持续超过阈值</b>才触发。</div>
+        <div class="muted" id="alarmTestInfo"></div>
+        <div class="muted">报警声会被本机麦克风拾回，故<b>播放期间 + 冷却期间</b>不写入噪音采样、也不触发噪声预警，避免自激；冷却结束后恢复检测。</div>
+      </div>
+
+      <div class="panel" style="margin-top:14px;">
+        <h2>报警静音时段（人要离开时用）</h2>
+        <div class="btns">
+          <button id="q30">🔕 静音 30 分钟</button>
+          <button id="q60">静音 1 小时</button>
+          <button id="q120">静音 2 小时</button>
+        </div>
+        <label>自定义时长（分钟）</label>
+        <input id="q_custom" type="number" step="1" min="1" placeholder="例如 45" />
+        <div class="btns">
+          <button id="qSet">设置静音</button>
+          <button id="qCancel" class="ghost">▶ 取消静音（立即恢复发声）</button>
+        </div>
+        <div class="muted" id="quietInfo">静音期间：监测与超量记录<b>照常进行</b>，只是超阈值时<b>不播放报警声</b>。</div>
+      </div>
+
+      <div class="panel" style="margin-top:14px;">
+        <h2>分时段策略（白天 / 晚间）</h2>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input id="f_sched_enabled" type="checkbox" style="width:auto;margin:0;" />
+          启用分时段策略（关闭时沿用上方全局阈值与报警设置）
+        </label>
+
+        <div style="border:0.5px solid var(--line);border-radius:8px;padding:10px;margin:8px 0;">
+          <div style="font-size:13px;font-weight:600;margin-bottom:6px;">☀ 白天时段</div>
+          <div style="display:flex;gap:8px;">
+            <div style="flex:1;"><label>开始</label><input id="f_day_start" type="time" /></div>
+            <div style="flex:1;"><label>结束</label><input id="f_day_end" type="time" /></div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <div style="flex:1;"><label>阈值 (dB)</label><input id="f_day_thr" type="number" step="0.5" /></div>
+            <div style="flex:1;"><label>持续 (秒)</label><input id="f_day_sus" type="number" step="0.5" /></div>
+          </div>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input id="f_day_alarm" type="checkbox" style="width:auto;margin:0;" />
+            白天超阈值时发声报警
+          </label>
+          <div style="display:flex;gap:8px;">
+            <div style="flex:1;"><label>报警时长 (秒)</label><input id="f_day_dur" type="number" step="1" min="1" /></div>
+            <div style="flex:1;"><label>冷却 (秒)</label><input id="f_day_cd" type="number" step="0.5" min="0" /></div>
+          </div>
+        </div>
+
+        <div style="border:0.5px solid var(--line);border-radius:8px;padding:10px;margin:8px 0;">
+          <div style="font-size:13px;font-weight:600;margin-bottom:6px;">🌙 晚间时段（支持跨零点，如 22:00 → 07:00）</div>
+          <div style="display:flex;gap:8px;">
+            <div style="flex:1;"><label>开始</label><input id="f_night_start" type="time" /></div>
+            <div style="flex:1;"><label>结束</label><input id="f_night_end" type="time" /></div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <div style="flex:1;"><label>阈值 (dB)</label><input id="f_night_thr" type="number" step="0.5" /></div>
+            <div style="flex:1;"><label>持续 (秒)</label><input id="f_night_sus" type="number" step="0.5" /></div>
+          </div>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input id="f_night_alarm" type="checkbox" style="width:auto;margin:0;" />
+            晚间超阈值时发声报警
+          </label>
+          <div style="display:flex;gap:8px;">
+            <div style="flex:1;"><label>报警时长 (秒)</label><input id="f_night_dur" type="number" step="1" min="1" /></div>
+            <div style="flex:1;"><label>冷却 (秒)</label><input id="f_night_cd" type="number" step="0.5" min="0" /></div>
+          </div>
+        </div>
+
+        <div class="muted" id="schedInfo"></div>
+        <div class="muted">修改后<b>立即生效</b>（无需保存/重启）。例：白天 70 dB 只记录不报警，晚间 55 dB 且开启报警。</div>
+      </div>
+
+      <div class="panel" style="margin-top:14px;">
+        <h2>服务控制</h2>
+        <div class="btns">
+          <button id="resetCfg">↺ 恢复默认设置</button>
+          <button id="restartSvc">⟳ 重启服务</button>
+          <button id="stopSvc" class="ghost">■ 停止服务</button>
+        </div>
+        <div class="muted" id="svcInfo">「恢复默认设置」把阈值/校准/报警/设备等还原为出厂值；「重启服务」用于换设备或改代码后生效（约 2 秒后刷新页面）；「停止服务」直接退出程序（桌面版没有窗口，用它来代替右键退出）。</div>
+      </div>
+
+      <div class="panel" style="margin-top:14px;">
+        <h2>超量告警日志（每页 100 条，可翻页）</h2>
+        <div class="btns"><button class="ghost" id="refreshAlerts">刷新</button></div>
+        <div id="alerts" class="muted">暂无记录</div>
+        <div id="alertPager" class="btns"></div>
+        <div class="muted" id="alertLocal"></div>
+      </div>
+
+      <div class="panel" style="margin-top:14px;">
+        <h2>日志维护（清空）</h2>
+        <label>清空范围</label>
+        <select id="clr_scope">
+          <option value="all">采样 + 超量告警</option>
+          <option value="samples">仅采样记录</option>
+          <option value="alerts">仅超量告警</option>
+        </select>
+        <label>时间范围</label>
+        <select id="clr_range">
+          <option value="all">全部（一键清空）</option>
+          <option value="1">近 1 小时</option>
+          <option value="24">近 24 小时</option>
+          <option value="168">近 7 天</option>
+          <option value="custom">自定义时间段…</option>
+        </select>
+        <div id="clr_custom" style="display:none;">
+          <div style="display:flex;gap:8px;">
+            <div style="flex:1;"><label>开始</label><input id="clr_start" type="datetime-local" /></div>
+            <div style="flex:1;"><label>结束</label><input id="clr_end" type="datetime-local" /></div>
+          </div>
+        </div>
+        <div class="btns">
+          <button id="clrBtn" style="background:var(--red);">清空日志</button>
+        </div>
+        <div class="muted" id="clrInfo"></div>
+        <div class="muted">清空告警后会<b>同步重写</b>本地 <span id="clrCsv">data/alerts.csv</span>，
+          不会出现"库里没了、CSV 里还在"。清空不可恢复。</div>
+      </div>
+
+      <div class="panel" style="margin-top:14px;">
+        <h2>日志文件（按日切割）</h2>
+        <div class="btns" style="align-items:center;">
+          <label style="display:flex;align-items:center;gap:4px;">
+            <input id="rot_on" type="checkbox" style="width:auto;margin:0;" /> 按日切割
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;">
+            保留
+            <input id="rot_keep" type="number" min="0" max="365" step="1"
+                   style="width:72px;margin:0;" /> 天
+          </label>
+          <button class="ghost" id="rotSave">保存</button>
+          <button class="ghost" id="rotRefresh">刷新</button>
+          <button class="ghost" id="rotNow" title="立刻归档当前文件（默认只在跨日时自动切）">立即切割一次</button>
+        </div>
+        <div id="logFiles" class="muted">读取中…</div>
+        <div class="muted" style="margin-top:8px;">
+          当前文件只装<b>今天</b>；跨日自动归档为 <code>volmon_YYYY-MM-DD.log</code> /
+          <code>alerts_YYYY-MM-DD.csv</code>，超过保留天数自动删除（0 = 不删）。
+          采样数据<b>不切割</b>，仍在单库 <code>data/volmon.db</code> 内，用上面的「清空」清理。
+        </div>
+      </div>
+      <div class="panel" style="margin-top:14px;">
+        <h2>触发录音（把报警时的真实声音存下来）</h2>
+        <div class="btns" style="align-items:center;">
+          <label style="display:flex;align-items:center;gap:4px;">
+            <input id="r_enabled" type="checkbox" style="width:auto;margin:0;" /> 开启录音
+          </label>
+        </div>
+        <label>触发时机</label>
+        <select id="r_trigger">
+          <option value="alert">正式报警时（推荐，误录最少）</option>
+          <option value="over">刚超过阈值时（最早，但可能较多）</option>
+          <option value="off">不自动录</option>
+        </select>
+        <div style="display:flex;gap:6px;">
+          <div style="flex:1;"><label>触发前保留（秒）</label><input id="r_pre" type="number" min="1" max="60" step="1" /></div>
+          <div style="flex:1;"><label>触发后继续录（秒）</label><input id="r_post" type="number" min="1" max="60" step="1" /></div>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <div style="flex:1;"><label>最多文件数</label><input id="r_maxf" type="number" min="0" step="10" /></div>
+          <div style="flex:1;"><label>总大小上限 MB</label><input id="r_maxmb" type="number" min="0" step="128" /></div>
+          <div style="flex:1;"><label>保留天数</label><input id="r_days" type="number" min="0" step="1" /></div>
+        </div>
+        <div class="btns" style="align-items:center;">
+          <label style="display:flex;align-items:center;gap:4px;">
+            <input id="r_cut" type="checkbox" style="width:auto;margin:0;" /> 报警触发即截断（仅保留触发前）
+          </label>
+        </div>
+        <div class="muted" style="margin:-2px 0 8px;">
+          开启「报警触发即截断」后，只要一报警，正在录的这段就<b>立刻停在触发那一刻</b>——
+          只保留触发<b>之前</b>那段真实环境音，报警声本身<b>绝不会</b>被录进 WAV
+          （它从触发点才响起，触发点之后我们不录）。这是最干净的规避方式：不靠计时去"躲"报警声，
+          而是干脆不录触发点之后的任何声音。关闭则按正常"前 N 秒 + 后 M 秒"完整录（会含报警声）。
+        </div>
+        <div class="btns">
+          <button id="rSave">保存设置</button>
+          <button class="ghost" id="rRefresh">刷新</button>
+          <button class="ghost" id="rPrune">立即清理</button>
+        </div>
+        <div class="muted" id="rInfo"></div>
+        <div id="rList" class="muted"></div>
+        <div class="muted" style="margin-top:6px;">
+          声音一直在**内存环形缓冲**里滚动保留最近若干秒，报警触发时直接把"触发前"那段取出来，
+          <b>不会因为程序反应慢而漏掉开头</b>；再接着录"触发后"几秒，拼成完整一段存为 WAV。
+          录音按日存放在 <code>data/recordings/YYYY-MM-DD/</code>。「立即清理」会<b>清空所有历史录音</b>（不可恢复）；超出保留天数(默认 30 天)/配额(默认 500 个 / 2GB)的文件仍会在后台自动删最旧的。
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:14px;">
+        <h2>本地存储配额（日志 + 录音）</h2>
+        <div id="quotaInfo" class="muted">读取中…</div>
+        <div style="display:flex;gap:6px;align-items:flex-end;margin-top:8px;">
+          <div style="flex:1;">
+            <label>日志 + 录音合计上限（MB）</label>
+            <input id="quota_cap" type="number" min="0" step="128" style="width:100%;" />
+          </div>
+          <div class="btns" style="padding-bottom:0;">
+            <button id="quotaSave">保存上限</button>
+            <button class="ghost" id="quotaEnforce">立即清理（删最旧）</button>
+            <button class="ghost" id="quotaRefresh">刷新</button>
+          </div>
+        </div>
+        <div class="muted" style="margin-top:8px;">
+          合计超过此上限时，服务会<b>每 5 分钟自动从最旧的文件开始删除</b>（先清归档日志与历史录音，
+          不动"今天"正在写的日志），直到低于上限——相当于"新的覆盖老的"，避免把磁盘撑爆。
+          <b>0 = 不限制</b>（仅沿用上面各项独立配额）。<code>volmon.db</code> 采样库不参与此配额，
+          请用「日志维护（清空）」控制其体积。
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:14px;">
+        <h2>每日报警邮件</h2>
+        <div class="btns" style="align-items:center;">
+          <label style="display:flex;align-items:center;gap:4px;">
+            <input id="m_enabled" type="checkbox" style="width:auto;margin:0;" /> 每天自动发送
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;">
+            每天
+            <input id="m_time" type="time" style="width:96px;margin:0;" /> 发送
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;">
+            报表范围
+            <select id="m_offset" style="width:120px;margin:0;">
+              <option value="1">昨天全天</option>
+              <option value="0">今天 00:00 起</option>
+            </select>
+          </label>
+        </div>
+
+        <label>SMTP 服务器 / 端口 / 加密</label>
+        <div style="display:flex;gap:6px;">
+          <input id="m_host" placeholder="smtp.qq.com" style="flex:2;" />
+          <input id="m_port" type="number" placeholder="465" style="flex:1;" />
+          <select id="m_sec" style="flex:1;">
+            <option value="ssl">SSL</option>
+            <option value="starttls">STARTTLS</option>
+            <option value="none">不加密</option>
+          </select>
+        </div>
+        <div class="btns">
+          <button class="ghost" data-preset="qq">QQ 邮箱</button>
+          <button class="ghost" data-preset="163">163 邮箱</button>
+          <button class="ghost" data-preset="gmail">Gmail</button>
+          <button class="ghost" data-preset="outlook">Outlook</button>
+          <button class="ghost" data-preset="qqex">腾讯企业邮</button>
+        </div>
+
+        <label>发件邮箱账号</label>
+        <input id="m_user" placeholder="123456@qq.com" />
+        <label>授权码（不是登录密码，需在邮箱设置里开启 SMTP 后生成）</label>
+        <input id="m_pass" type="password" placeholder="留空表示不修改" />
+        <label>收件人（多个用英文逗号分隔；留空则发给发件人自己）</label>
+        <input id="m_to" placeholder="you@example.com" />
+
+        <div class="btns" style="align-items:center;">
+          <label style="display:flex;align-items:center;gap:4px;">
+            <input id="m_attach" type="checkbox" style="width:auto;margin:0;" /> 附带当天告警 CSV
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;">
+            <input id="m_skip" type="checkbox" style="width:auto;margin:0;" /> 无告警时不发
+          </label>
+        </div>
+        <div class="btns">
+          <button id="mSave">保存设置</button>
+          <button class="ghost" id="mPreview">预览报表</button>
+          <button class="ghost" id="mSend">立即发送测试邮件</button>
+        </div>
+        <div class="muted" id="mInfo"></div>
+        <div class="muted" style="margin-top:6px;">
+          邮件正文含当日<b>超量次数 / 峰值 / 累计超标时长 / 时段分布 / 明细表</b>，
+          可选附带 CSV 附件。到点由服务自动发送（服务当天启动晚了会补发一次，同一天不会重复发）。
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const WS = ((location.protocol === "https:") ? "wss://" : "ws://") + location.host + "/ws";
+const API = location.origin + "/api";
+let ws = null, waveBuf = [], peakDb = 0, threshold = 70, calibrated = false;
+let trendHours = 24;
+
+const $ = id => document.getElementById(id);
+const ctxWave = $("wave").getContext("2d");
+const ctxTrend = $("trend").getContext("2d");
+
+function setBanner(alert, over) {
+  const b = $("banner");
+  if (alert) { b.className = "alert"; b.textContent = "⚠ 超量告警！音量持续超过阈值，请检查环境噪声"; }
+  else if (over) { b.className = "over"; b.textContent = "▲ 当前超过阈值（尚未达到持续时长）"; }
+  else { b.className = ""; b.textContent = ""; }
+}
+
+function updateAlarm(phase, suppressed, over, db, threshold) {
+  const el = $("alarmStat");
+  if (phase === "playing") {
+    el.textContent = "🔊 音量报警播放中 · 监测已静默（报警声不计入噪音）";
+    el.style.color = "var(--red)";
+  } else if (phase === "cooldown") {
+    el.textContent = "⏸ 报警后冷却中…即将恢复噪声监测";
+    el.style.color = "var(--amber)";
+  } else if (typeof db === "number" && typeof threshold === "number" && db < threshold) {
+    el.textContent = `● 监测中：当前 ${db.toFixed(1)} dB < 阈值 ${threshold.toFixed(1)} dB（需持续超阈值 ${sustainHint()} 才触发报警）`;
+    el.style.color = "var(--muted)";
+  } else {
+    el.textContent = over ? "▲ 当前超阈值（未达持续时长）" : "● 监测正常";
+    el.style.color = "var(--muted)";
+  }
+}
+
+// ---- 实际在用设备（回答"到底在用哪个麦克风 / 声音从哪一路出"）----
+function updateDeviceStat(info, outDevice) {
+  const el = $("devStat");
+  if (!info || !info.name) {
+    el.textContent = "采集设备：未知（采集流未启动？）";
+    el.style.color = "var(--amber)";
+    return;
+  }
+  const sr = info.samplerate ? ` · ${Math.round(info.samplerate)}Hz` : "";
+  let txt = `采集设备：${info.name}（索引 ${info.index}${sr}）`;
+  const sel = $("f_device").value;
+  let warn = "";
+  if (sel && sel !== "default" && info.name !== sel) {
+    warn = `　⚠ 实际与所选「${sel}」不一致`;
+  } else if (sel === "default" && info.index !== null) {
+    // 默认设备：不视为不一致，仅提示
+  }
+  txt += warn;
+  el.textContent = txt;
+  el.style.color = warn ? "var(--red)" : "var(--muted)";
+
+  const o = $("outStat");
+  if (o) o.textContent = `报警输出：${outDevice || "系统默认输出设备"}（改选后立即生效，可点「🔊 试听报警音」确认）`;
+}
+
+function sustainHint() {
+  const s = parseFloat($("f_sustain").value);
+  return isNaN(s) ? "3" : s;
+}
+
+function bindAlarmAutosave() {
+  const save = async () => {
+    const vals = {
+      alarm_enabled: $("f_alarm_enabled").checked,
+      alarm_duration_sec: parseFloat($("f_alarm_duration").value),
+      alarm_cooldown_sec: parseFloat($("f_alarm_cooldown").value),
+      alarm_output_device: $("f_alarm_output").value || "",
+    };
+    await fetch(API + "/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(vals),
+    });
+    const outName = $("f_alarm_output").selectedOptions[0]
+      ? $("f_alarm_output").selectedOptions[0].textContent : "系统默认";
+    $("alarmInfo").textContent =
+      `已即时生效：${vals.alarm_enabled ? "报警开启" : "报警关闭"} · ${vals.alarm_duration_sec}s / 冷却 ${vals.alarm_cooldown_sec}s · 输出：${outName}`;
+    loadPolicy();
+  };
+  $("f_alarm_enabled").onchange = save;
+  $("f_alarm_duration").onchange = save;
+  $("f_alarm_cooldown").onchange = save;
+  $("f_alarm_output").onchange = save;
+}
+
+function connect() {
+  ws = new WebSocket(WS);
+  ws.onopen = () => { $("conn").textContent = "已连接"; $("conn").className = "pill ok"; };
+  ws.onclose = () => { $("conn").textContent = "未连接"; $("conn").className = "pill bad"; setTimeout(connect, 1500); };
+  ws.onmessage = ev => {
+    const d = JSON.parse(ev.data);
+    if (d.type === "config_applied") return;
+    threshold = d.threshold; calibrated = d.calibrated;
+    $("cur").textContent = d.db.toFixed(1);
+    $("raw").textContent = d.raw_db.toFixed(1);
+    $("thr").textContent = d.threshold.toFixed(1);
+    peakDb = Math.max(peakDb, d.db);
+    $("peak").textContent = peakDb.toFixed(1);
+    $("calib").textContent = calibrated ? "已校准" : "未校准(估算)";
+    $("calib").className = "pill " + (calibrated ? "ok" : "warn");
+    if (d.version) showVersion(d.version, d.version_display);
+    updateDeviceStat(d.input_device, d.alarm_output_device);
+    // 时段发生切换时刷新分时段面板（生效阈值会随之变化）
+    if (d.period && d.period !== lastPeriod) { lastPeriod = d.period; loadSchedule(); }
+    const qi = $("quietInfo");
+    if (d.quiet_active) {
+      qi.innerHTML = `🔕 <b>报警静音中</b>：剩余 ${fmtDur(d.quiet_remaining_sec)}，期间超阈值<b>不发声</b>（监测与超量记录照常）`;
+    } else if (qi.dataset.wasQuiet !== "0") {
+      qi.textContent = "当前未静音：超阈值会正常播放报警声。";
+    }
+    qi.dataset.wasQuiet = d.quiet_active ? "1" : "0";
+    const suppressed = !!d.suppressed;
+    if (suppressed) setBanner(false, false);  // 报警静默期不显示噪声横幅
+    else setBanner(d.alert, d.over);
+    updateAlarm(d.alarm_phase, suppressed, d.over, d.db, d.threshold);
+    const mw = $("micWarn");
+    if (d.mic_silent) {
+      mw.textContent = "⚠ 麦克风持续为静音地板（-100 dBFS）：疑似未授权麦克风权限 / 输入被静音 / 设备选错。"
+        + "请到 系统设置 → 隐私与安全性 → 麦克风 授权，并用有权限的终端重启服务（读数恢复后需重新校准）。";
+      mw.style.color = "var(--red)";
+    } else {
+      mw.textContent = "";
+    }
+    waveBuf.push(d.db); if (waveBuf.length > 600) waveBuf.shift();
+    drawWave();
+  };
+}
+
+// 自适应 Y 轴：按数据（并含阈值）取整到 10 的倍数，最小跨度 30dB，
+// 避免未校准时读数全为负值被钳在 30 处变成一条直线。
+function yRange(vals, thr) {
+  let mn = Infinity, mx = -Infinity;
+  for (const v of vals) { if (v < mn) mn = v; if (v > mx) mx = v; }
+  if (typeof thr === "number") { mn = Math.min(mn, thr); mx = Math.max(mx, thr); }
+  if (!isFinite(mn) || !isFinite(mx)) return { lo: 30, hi: 100, step: 10 };
+  let lo = Math.floor((mn - 5) / 10) * 10;
+  let hi = Math.ceil((mx + 5) / 10) * 10;
+  if (hi - lo < 30) {
+    const c = (hi + lo) / 2;
+    lo = Math.floor((c - 15) / 5) * 5;
+    hi = Math.ceil((c + 15) / 5) * 5;
+  }
+  const span = hi - lo;
+  const step = span > 120 ? 20 : (span > 60 ? 10 : 5);
+  return { lo, hi, step };
+}
+
+function drawWave() {
+  const c = $("wave"), w = c.width = c.clientWidth, h = c.height;
+  ctxWave.clearRect(0,0,w,h);
+  const padL = 40, padR = 10, padT = 10, padB = 20;
+  const pw = w - padL - padR, ph = h - padT - padB;
+  const { lo, hi, step } = yRange(waveBuf, threshold);
+  const y = v => padT + ph - (Math.min(Math.max(v, lo), hi) - lo) / (hi - lo) * ph;
+  const N = 600; // 与 waveBuf 最大容量一致
+  // Y 轴网格 + 音量 dB 标签
+  ctxWave.font = "11px -apple-system, 'Microsoft YaHei', sans-serif";
+  ctxWave.textBaseline = "middle"; ctxWave.textAlign = "right";
+  ctxWave.lineWidth = 1;
+  for (let db = lo; db <= hi; db += step) {
+    const yy = y(db);
+    ctxWave.strokeStyle = "#e5e7eb";
+    ctxWave.beginPath(); ctxWave.moveTo(padL, yy); ctxWave.lineTo(padL + pw, yy); ctxWave.stroke();
+    ctxWave.fillStyle = "#6b7280"; ctxWave.fillText(db, padL - 4, yy);
+  }
+  // X 轴时间标签（窗口 60s：-60s … 现在）
+  ctxWave.textBaseline = "top"; ctxWave.textAlign = "center"; ctxWave.fillStyle = "#6b7280";
+  for (let k = 0; k <= 4; k++) {
+    const frac = k / 4;
+    const x = padL + pw * frac;
+    const secAgo = Math.round((1 - frac) * 60);
+    ctxWave.fillText(secAgo === 0 ? "现在" : ("-" + secAgo + "s"), x, padT + ph + 4);
+  }
+  // Y 轴标题
+  ctxWave.save(); ctxWave.translate(12, padT + ph/2); ctxWave.rotate(-Math.PI/2);
+  ctxWave.textAlign = "center"; ctxWave.textBaseline = "middle"; ctxWave.fillStyle = "#9ca3af";
+  ctxWave.fillText("音量 dB", 0, 0); ctxWave.restore();
+  // 阈值线
+  ctxWave.strokeStyle = "#dc2626"; ctxWave.setLineDash([6,4]); ctxWave.beginPath();
+  ctxWave.moveTo(padL, y(threshold)); ctxWave.lineTo(padL + pw, y(threshold)); ctxWave.stroke();
+  ctxWave.setLineDash([]);
+  // 波形（右对齐：最新点在最右，向左滚动）
+  const n = waveBuf.length;
+  if (n > 1) {
+    ctxWave.strokeStyle = "#2563eb"; ctxWave.lineWidth = 1.5; ctxWave.beginPath();
+    for (let i=0;i<n;i++){
+      const x = padL + pw * ((N - n + i) / (N - 1));
+      const yy = y(waveBuf[i]); i ? ctxWave.lineTo(x, yy) : ctxWave.moveTo(x, yy);
+    }
+    ctxWave.stroke();
+  }
+}
+
+async function loadTrend() {
+  const r = await fetch(API + "/samples?hours=" + trendHours);
+  const rows = await r.json();
+  $("trendRange").textContent = "(近 " + (trendHours>=168? "7 天": trendHours+" 小时") + ")";
+  const c = $("trend"), w = c.width = c.clientWidth, h = c.height;
+  ctxTrend.clearRect(0,0,w,h);
+  const padL = 40, padR = 10, padT = 10, padB = 24;
+  const pw = w - padL - padR, ph = h - padT - padB;
+  const { lo, hi, step } = yRange(rows.map(r => r.db), threshold);
+  const y = v => padT + ph - (Math.min(Math.max(v, lo), hi) - lo) / (hi - lo) * ph;
+  if (!rows.length) { $("trendStat").textContent = "暂无数据"; return; }
+  let max = -1e9, sum = 0, overCount = 0;
+  ctxTrend.font = "11px -apple-system, 'Microsoft YaHei', sans-serif";
+  ctxTrend.textBaseline = "middle"; ctxTrend.textAlign = "right";
+  for (let db = lo; db <= hi; db += step) {
+    const yy = y(db);
+    ctxTrend.strokeStyle = "#e5e7eb"; ctxTrend.lineWidth = 1;
+    ctxTrend.beginPath(); ctxTrend.moveTo(padL, yy); ctxTrend.lineTo(padL + pw, yy); ctxTrend.stroke();
+    ctxTrend.fillStyle = "#6b7280"; ctxTrend.fillText(db, padL - 4, yy);
+  }
+  // Y 轴标题
+  ctxTrend.save(); ctxTrend.translate(12, padT + ph/2); ctxTrend.rotate(-Math.PI/2);
+  ctxTrend.textAlign = "center"; ctxTrend.textBaseline = "middle"; ctxTrend.fillStyle = "#9ca3af";
+  ctxTrend.fillText("音量 dB", 0, 0); ctxTrend.restore();
+  // 用真实时间戳映射 X 轴（样本含 t 字段，毫秒）
+  const t0 = rows[0].t, t1 = rows[rows.length-1].t;
+  const span = Math.max(t1 - t0, 1);
+  const xOf = ts => padL + pw * (ts - t0) / span;
+  ctxTrend.strokeStyle = "#2563eb"; ctxTrend.lineWidth = 1.5; ctxTrend.beginPath();
+  for (let i=0;i<rows.length;i++){
+    const x = xOf(rows[i].t);
+    const yy = y(rows[i].db);
+    i?ctxTrend.lineTo(x,yy):ctxTrend.moveTo(x,yy);
+    max = Math.max(max, rows[i].db); sum += rows[i].db;
+    if (rows[i].db > threshold) overCount++;
+  }
+  ctxTrend.stroke();
+  // 阈值线
+  ctxTrend.strokeStyle = "#dc2626"; ctxTrend.setLineDash([6,4]); ctxTrend.beginPath();
+  ctxTrend.moveTo(padL, y(threshold)); ctxTrend.lineTo(padL + pw, y(threshold)); ctxTrend.stroke(); ctxTrend.setLineDash([]);
+  // X 轴时间标签（起 / 中 / 止）
+  ctxTrend.textAlign = "center"; ctxTrend.textBaseline = "top"; ctxTrend.fillStyle = "#6b7280";
+  const fmt = ts => new Date(ts).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+  ctxTrend.fillText(fmt(t0), padL, padT + ph + 5);
+  ctxTrend.fillText(fmt((t0+t1)/2), padL + pw/2, padT + ph + 5);
+  ctxTrend.fillText(fmt(t1), padL + pw, padT + ph + 5);
+  const avg = sum / rows.length;
+  $("trendStat").textContent = `均值 ${avg.toFixed(1)} dB · 峰值 ${max.toFixed(1)} dB · 超阈值采样点占比 ${(overCount/rows.length*100).toFixed(1)}%`;
+}
+
+const ALERT_PAGE_SIZE = 100;   // 每页条数（前端只做分页，数据一条不丢）
+const ALERT_HOURS = 168;       // 近 7 天
+let alertPage = 0, alertTotal = 0;
+
+async function loadAlerts() {
+  const el = $("alerts");
+  try {
+    const cr = await fetch(`${API}/alerts/count?hours=${ALERT_HOURS}`);
+    const c = await cr.json();
+    alertTotal = c.total || 0;
+  } catch (e) {
+    alertTotal = 0;
+  }
+  const pages = Math.max(1, Math.ceil(alertTotal / ALERT_PAGE_SIZE));
+  if (alertPage >= pages) alertPage = pages - 1;
+  if (alertPage < 0) alertPage = 0;
+  const offset = alertPage * ALERT_PAGE_SIZE;
+
+  const r = await fetch(`${API}/alerts?hours=${ALERT_HOURS}&limit=${ALERT_PAGE_SIZE}&offset=${offset}`);
+  const rows = await r.json();
+
+  $("alertLocal").textContent = window.alertsCsvPath
+    ? `完整记录同时实时写入本地文件 ${window.alertsCsvPath}（UTF-8 CSV，可用 Excel / 文本工具直接查看）`
+    : "";
+
+  if (!rows.length) {
+    el.className = "muted";
+    el.textContent = `近 7 天暂无超量记录（共 ${alertTotal} 条）`;
+    $("alertPager").innerHTML = "";
+    return;
+  }
+  el.className = "";
+  const from = offset + 1, to = offset + rows.length;
+  el.innerHTML =
+    `<div class="muted" style="margin-bottom:6px;">第 ${alertPage + 1}/${pages} 页 · 显示 ${from}-${to} 条 / 共 ${alertTotal} 条（全部保留，翻页查看）</div>` +
+    "<table><tr><th>开始时间</th><th>峰值</th><th>阈值</th><th>持续</th><th>时段/策略</th><th>声音报警</th><th>录音</th></tr>" +
+    rows.map(a => {
+      const rec = a.audio_file
+        ? `<button class="ghost" style="padding:3px 8px;" onclick="playRec('${a.audio_file}')">▶ 播放</button>`
+        : `<span style="color:var(--muted);">—</span>`;
+      return `<tr><td>${new Date(a.start_ts).toLocaleString()}</td><td>${a.peak_db} dB</td><td>${a.threshold_db} dB</td><td>${a.duration_s} s</td><td>${a.schedule_applied ? "分时段·" + a.period : "全局"}</td><td>${a.alarm_enabled ? "开 " + a.alarm_duration_sec + "s" : "关"}</td><td>${rec}</td></tr>`;
+    }).join("") +
+    "</table>";
+
+  const p = $("alertPager");
+  p.innerHTML =
+    `<button class="ghost" id="alertPrev"${alertPage <= 0 ? " disabled" : ""}>← 上一页</button>` +
+    `<span class="muted" style="align-self:center;">第 ${alertPage + 1} / ${pages} 页</span>` +
+    `<button class="ghost" id="alertNext"${alertPage >= pages - 1 ? " disabled" : ""}>下一页 →</button>`;
+  $("alertPrev").onclick = () => { if (alertPage > 0) { alertPage--; loadAlerts(); } };
+  $("alertNext").onclick = () => { if (alertPage < pages - 1) { alertPage++; loadAlerts(); } };
+}
+
+// ---- 版本号上屏（每个版本都必须可见，见《开发规范》§1.5） ----
+// 优先用 WS 广播；若服务刚重启/WS 未连上，则从 /api/health 兜底，
+// 保证页面任何时候都能看到当前运行的是哪个版本（避免"改了代码却跑旧版"）。
+function showVersion(v, full) {
+  if (!v) return;
+  const el = $("ver");
+  const text = full || ("v" + v);     // 如 "volmon-mac 1.0"
+  if (el.dataset.v === text) return;
+  el.dataset.v = text;
+  el.textContent = text;
+  document.title = "音量监控 · 实时面板 " + text;
+}
+
+async function loadVersion() {
+  try {
+    const r = await fetch(API + "/health");
+    const j = await r.json();
+    showVersion(j.version, j.version_display);
+  } catch (e) { /* 服务未就绪，稍后由 WS 广播补上 */ }
+}
+
+// ---- 输入/输出设备下拉 ----
+// 若配置里存的设备已不在列表中（被拔掉），仍保留一项并标注，避免静默丢失配置。
+function fillDeviceSelect(sel, devs, current, defVal, defLabel) {
+  const opts = [`<option value="${defVal}">${defLabel}</option>`]
+    .concat(devs.map(x => `<option value="${x.name}">${x.name}</option>`));
+  if (current && current !== defVal && !devs.some(x => x.name === current)) {
+    opts.push(`<option value="${current}">${current}（当前未连接）</option>`);
+  }
+  sel.innerHTML = opts.join("");
+  sel.value = current || defVal;
+}
+
+async function loadConfig() {
+  const r = await fetch(API + "/config"); const c = await r.json();
+  $("f_threshold").value = c.threshold_db; $("f_sustain").value = c.sustain_sec;
+  $("f_sample").value = c.sample_interval_ms; $("f_log").value = c.log_interval_ms;
+  $("f_alarm_enabled").checked = !!c.alarm_enabled;
+  $("f_alarm_duration").value = c.alarm_duration_sec; $("f_alarm_cooldown").value = c.alarm_cooldown_sec;
+  window.alertsCsvPath = c.alerts_csv_path;
+  if ($("clrCsv")) $("clrCsv").textContent = c.alerts_csv_path;
+  threshold = c.threshold_db; calibrated = Math.abs(c.calib_offset_db) > 1e-6;
+
+  const d = await fetch(API + "/devices"); const devs = await d.json();
+  fillDeviceSelect($("f_device"), devs, c.device || "default", "default", "默认设备");
+
+  try {
+    const o = await fetch(API + "/output-devices"); const outs = await o.json();
+    fillDeviceSelect($("f_alarm_output"), outs, c.alarm_output_device || "",
+                     "", "系统默认输出设备");
+  } catch (e) {
+    fillDeviceSelect($("f_alarm_output"), [], c.alarm_output_device || "",
+                     "", "系统默认输出设备");
+  }
+}
+
+// 重新扫描：PortAudio 在进程内只枚举一次，热插拔后需要它才能看到新设备
+async function rescanDevices(focus) {
+  const j = await (await fetch(API + "/devices/rescan", { method: "POST" })).json();
+  if (!j.ok) throw new Error(j.msg || "扫描失败");
+  if (focus !== "out") {
+    fillDeviceSelect($("f_device"), j.devices, $("f_device").value, "default", "默认设备");
+  }
+  fillDeviceSelect($("f_alarm_output"), j.output_devices || [], $("f_alarm_output").value,
+                   "", "系统默认输出设备");
+  return j;
+}
+
+$("rescanDev").onclick = async () => {
+  $("devInfo").textContent = "正在重新扫描音频设备…（采集会中断约 1 秒）";
+  try {
+    const j = await rescanDevices("in");
+    $("devInfo").textContent =
+      `已刷新：输入 ${j.devices.length} 个 / 输出 ${(j.output_devices || []).length} 个。选中后记得点「保存设置」。`
+      + (j.devices.length ? "" : "（未发现输入设备，请检查连接）");
+  } catch (e) {
+    $("devInfo").textContent = "刷新失败：" + e.message;
+  }
+};
+
+$("rescanOut").onclick = async () => {
+  $("alarmTestInfo").textContent = "正在重新扫描输出设备…";
+  try {
+    const j = await rescanDevices("out");
+    $("alarmTestInfo").textContent =
+      `已刷新：输出 ${(j.output_devices || []).length} 个。选择后点「🔊 试听报警音」确认声音从哪一路出来。`;
+  } catch (e) {
+    $("alarmTestInfo").textContent = "刷新失败：" + e.message;
+  }
+};
+
+$("calBtn").onclick = async () => {
+  const meas = parseFloat($("meas").value);
+  if (!meas) return alert("请输入专业设备测得的真实 dB");
+  const r = await fetch(API + "/raw_avg?n=150"); const j = await r.json();
+  const base = (typeof j.base_avg === "number") ? j.base_avg : j.raw_avg;
+  const offset = +(meas - base).toFixed(2);
+  await fetch(API + "/config", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({calib_offset_db: offset})});
+  $("calInfo").textContent = `校准前估算 ${base.toFixed(1)} dB → 修正 ${offset>0?"+":""}${offset} dB 已应用（读数已对齐专业设备）`;
+  calibrated = true;
+};
+
+$("saveBtn").onclick = async () => {
+  const vals = {
+    threshold_db: parseFloat($("f_threshold").value),
+    sustain_sec: parseFloat($("f_sustain").value),
+    sample_interval_ms: parseInt($("f_sample").value),
+    log_interval_ms: parseInt($("f_log").value),
+    device: $("f_device").value,
+    alarm_enabled: $("f_alarm_enabled").checked,
+    alarm_duration_sec: parseFloat($("f_alarm_duration").value),
+    alarm_cooldown_sec: parseFloat($("f_alarm_cooldown").value),
+  };
+  await fetch(API + "/config", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(vals)});
+  threshold = vals.threshold_db;
+  $("saveInfo").textContent = "已保存并立即生效";
+  setTimeout(()=>$("saveInfo").textContent="", 2500);
+};
+
+document.querySelectorAll("[data-h]").forEach(b => b.onclick = () => { trendHours = +b.dataset.h; loadTrend(); });
+$("refreshAlerts").onclick = loadAlerts;
+
+// ---- 当前生效策略明细 ----
+async function loadPolicy() {
+  try {
+    const j = await (await fetch(API + "/policy")).json();
+    const d = j.input_device || {};
+    const rows = [
+      ["策略来源", j.source + (j.schedule_enabled ? "" : "（分时段未启用）")],
+      ["当前时段", `${j.period_label}（距切换约 ${fmtSwitch(j.next_switch_min)}）`],
+      ["时段区间", `白天 ${j.windows.day.start}~${j.windows.day.end}　｜　晚间 ${j.windows.night.start}~${j.windows.night.end}`],
+      ["预警阈值", `${j.threshold_db} dB（需持续 ${j.sustain_sec} s）`],
+      ["声音报警", j.alarm_enabled ? `开启 · 响 ${j.alarm_duration_sec} s（冷却 ${j.alarm_cooldown_sec} s）` : "关闭"],
+      ["报警输出", j.alarm_output_device || "系统默认输出设备"],
+      ["报警静音", j.quiet_active ? `生效中 · 剩余 ${fmtDur(j.quiet_remaining_sec)}` : "未启用"],
+      ["采集设备", `${d.name || "未知"}（索引 ${d.index ?? "-"}）`],
+      ["校准状态", j.calibrated ? `已校准 ${j.calib_offset_db} dB` : "未校准（估算）"],
+      ["日志条数", `采样 ${j.counts.samples} 条 / 超量告警 ${j.counts.alerts} 条`],
+    ];
+    let html = "<table>"
+      + rows.map(([k, v]) => `<tr><td style="width:78px;color:var(--muted);">${k}</td><td>${v}</td></tr>`).join("")
+      + "</table>";
+    if (j.warnings && j.warnings.length) {
+      html += `<div style="color:var(--amber);margin-top:6px;">⚠ ${j.warnings.join("；")}</div>`;
+    }
+    $("policyBox").innerHTML = html;
+  } catch (e) {
+    $("policyBox").textContent = "读取失败: " + e;
+  }
+}
+$("refreshPolicy").onclick = loadPolicy;
+
+// ---- 日志维护（清空）----
+$("clr_range").onchange = () => {
+  $("clr_custom").style.display = $("clr_range").value === "custom" ? "" : "none";
+};
+
+$("clrBtn").onclick = async () => {
+  const scope = $("clr_scope").value;
+  const scopeName = $("clr_scope").selectedOptions[0].textContent;
+  const r = $("clr_range").value;
+  let payload = { scope }, desc = "";
+  if (r === "all") {
+    payload.all = true; desc = "【全部】";
+  } else if (r === "custom") {
+    const s = $("clr_start").value, e = $("clr_end").value;
+    if (!s && !e) { $("clrInfo").textContent = "请至少填写开始或结束时间"; return; }
+    if (s) payload.start_ts = new Date(s).getTime();
+    if (e) payload.end_ts = new Date(e).getTime();
+    desc = `${s || "最早"} ~ ${e || "现在"}`;
+  } else {
+    payload.hours = parseFloat(r); desc = `近 ${r} 小时`;
+  }
+  if (!confirm(`确定清空 ${desc} 的日志？\n范围：${scopeName}\n该操作不可恢复。`)) return;
+
+  $("clrInfo").textContent = "正在清空…";
+  try {
+    const j = await (await fetch(API + "/logs/clear", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })).json();
+    if (!j.ok) { $("clrInfo").textContent = "清空失败：" + (j.error || ""); return; }
+    const d = j.deleted || {};
+    $("clrInfo").textContent =
+      `已清空：采样 ${d.samples} 条 / 超量告警 ${d.alerts} 条　→　剩余 采样 ${j.remaining.samples} / 告警 ${j.remaining.alerts}；本地 CSV 已同步重写`;
+    alertPage = 0;
+    loadAlerts(); loadTrend(); loadPolicy();
+  } catch (e) {
+    $("clrInfo").textContent = "清空失败: " + e;
+  }
+};
+
+// ---- 日志文件（按日切割）----
+function kb(n) { return (n / 1024).toFixed(1) + " KB"; }
+
+async function loadLogFiles() {
+  try {
+    const j = await (await fetch(API + "/logs/files")).json();
+    $("rot_on").checked = !!j.rotate_daily;
+    $("rot_keep").value = j.keep_days;
+    let html = "";
+    for (const f of j.files) {
+      html += `<div style="margin-top:6px;"><b>${f.base}</b>`;
+      html += f.current
+        ? `<div>今天：<code>${f.current.name}</code> ${kb(f.current.size)} · ${f.current.mtime}</div>`
+        : `<div>今天：<span class="muted">（暂无）</span></div>`;
+      if (!f.archives.length) {
+        html += `<div class="muted">归档：（暂无）</div>`;
+      } else {
+        for (const a of f.archives) {
+          html += `<div>归档：<code>${a.name}</code> ${kb(a.size)} · ${a.mtime}</div>`;
+        }
+      }
+      html += `</div>`;
+    }
+    html += `<div style="margin-top:8px;">采样库（不切割）：<code>${j.db_path || "-"}</code></div>`;
+    $("logFiles").innerHTML = html;
+  } catch (e) {
+    $("logFiles").textContent = "读取失败: " + e;
+  }
+}
+$("rotRefresh").onclick = loadLogFiles;
+
+$("rotSave").onclick = async () => {
+  const keep = parseInt($("rot_keep").value, 10);
+  if (isNaN(keep) || keep < 0) { alert("保留天数请填 0 或正整数（0 = 不删除）"); return; }
+  try {
+    const j = await (await fetch(API + "/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ log_rotate_daily: $("rot_on").checked, log_keep_days: keep }),
+    })).json();
+    if (!j.ok) { alert("保存失败：" + (j.error || "")); return; }
+    alert("已保存：按日切割 " + ($("rot_on").checked ? "开启" : "关闭") + "，保留 " + keep + " 天");
+    loadLogFiles();
+  } catch (e) { alert("保存失败: " + e); }
+};
+
+$("rotNow").onclick = async () => {
+  if (!confirm("立刻把当前日志文件归档为「今天」的文件？\n（正常无需手动操作，跨天时会自动切）")) return;
+  try {
+    const j = await (await fetch(API + "/logs/rotate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force: true }),
+    })).json();
+    if (!j.ok) { alert("切割失败：" + (j.error || "")); return; }
+    const names = (j.archived || []).map(p => String(p).split("/").pop()).join("、");
+    alert("已归档 " + (j.archived || []).length + " 个文件" + (names ? "：\n" + names : "")
+      + "\n清理过期 " + (j.deleted || []).length + " 个");
+    loadLogFiles();
+  } catch (e) { alert("切割失败: " + e); }
+};
+
+// ---- 触发录音 ----
+function playRec(file) {
+  const url = API + "/audio/" + file;
+  const w = window.open("", "_blank", "width=420,height=200");
+  if (!w) { window.location.href = url; return; }
+  w.document.write(
+    `<meta charset="utf-8"><title>录音 ${file}</title>` +
+    `<body style="font-family:-apple-system,Segoe UI,Microsoft YaHei,sans-serif;padding:16px;">` +
+    `<div style="font-size:13px;margin-bottom:8px;">${file}</div>` +
+    `<audio src="${url}" controls autoplay style="width:100%;"></audio>` +
+    `<div style="margin-top:8px;"><a href="${url}" download>⬇ 下载 WAV</a></div></body>`
+  );
+  w.document.close();
+}
+
+async function loadRecordings() {
+  try {
+    const j = await (await fetch(API + "/recordings")).json();
+    $("r_enabled").checked = !!j.enabled;
+    $("r_trigger").value = j.trigger || "alert";
+    $("r_pre").value = j.pre_sec;
+    $("r_post").value = j.post_sec;
+    $("r_maxf").value = j.max_files;
+    $("r_maxmb").value = j.max_mb;
+    $("r_days").value = j.keep_days;
+    $("r_cut").checked = !!j.cut_on_alarm;
+    let info = j.enabled
+      ? (j.ready ? `缓冲 ${j.buffer_sec}s · ${j.samplerate}Hz · ${j.channels}ch` : "缓冲准备中…")
+      : "录音已关闭";
+    if (j.recording) info += " · 🔴 正在录音";
+    if (j.cut_on_alarm) info += " · ✂ 报警触发即截断";
+    info += `　共 ${j.count} 个文件 / ${j.total_mb} MB`;
+    if (j.last_error) info += `　⚠ ${j.last_error}`;
+    $("rInfo").textContent = info;
+    $("rList").innerHTML = j.recent && j.recent.length
+      ? "最近录音：" + j.recent.map(f =>
+          `<div><code>${f.file}</code> ${kb(f.size)} · ${f.mtime}
+           <button class="ghost" style="padding:2px 6px;" onclick="playRec('${f.file}')">▶</button></div>`
+        ).join("")
+      : "（暂无录音文件）";
+  } catch (e) { $("rInfo").textContent = "读取失败: " + e; }
+}
+$("rRefresh").onclick = loadRecordings;
+
+$("rSave").onclick = async () => {
+  const body = {
+    rec_enabled: $("r_enabled").checked,
+    rec_trigger: $("r_trigger").value,
+    rec_pre_sec: parseFloat($("r_pre").value) || 5,
+    rec_post_sec: parseFloat($("r_post").value) || 5,
+    rec_max_files: parseInt($("r_maxf").value, 10) || 0,
+    rec_max_mb: parseFloat($("r_maxmb").value) || 0,
+    rec_keep_days: parseInt($("r_days").value, 10) || 0,
+    rec_cut_on_alarm: $("r_cut").checked,
+  };
+  if (body.rec_pre_sec < 1 || body.rec_post_sec < 1) { alert("前后时长至少 1 秒"); return; }
+  try {
+    const j = await (await fetch(API + "/config", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })).json();
+    if (!j.ok) { $("rInfo").textContent = "保存失败：" + (j.error || ""); return; }
+    $("rInfo").textContent = "已保存" + (body.rec_enabled ? "，录音已开启" : "，录音已关闭")
+      + "（缓冲如未生效，点页面「重启服务」让改动立即生效）";
+    loadRecordings();
+  } catch (e) { $("rInfo").textContent = "保存失败: " + e; }
+};
+
+$("rPrune").onclick = async () => {
+  if (!confirm("确定要立即清空所有录音吗？\n此操作不可恢复（按保留天数/配额的自动清理仍会在后台继续）。")) return;
+  try {
+    const j = await (await fetch(API + "/recordings/clear", { method: "POST" })).json();
+    $("rInfo").textContent = j.ok ? `已清空 ${j.removed} 个录音文件，剩余 ${j.count} 个 / ${j.total_mb} MB` : ("清空失败: " + (j.error || ""));
+    loadRecordings();
+  } catch (e) { $("rInfo").textContent = "清空失败: " + e; }
+};
+
+// ---- 本地存储配额（日志 + 录音）----
+async function loadStorageQuota() {
+  try {
+    const j = await (await fetch(API + "/storage/quota")).json();
+    $("quota_cap").value = j.cap_mb;
+    const pct = j.unlimited ? "不限" : (j.cap_mb > 0 ? (100 * j.total_mb / j.cap_mb).toFixed(1) + "%" : "-");
+    let s = `合计占用 <b>${j.total_mb} MB</b> / 上限 <b>${j.unlimited ? "不限" : j.cap_mb + " MB"}</b>（${pct}）`;
+    s += `　·　日志 ${j.log_mb} MB　·　录音 ${j.rec_mb} MB　·　共 ${j.count} 个文件（录音 ${j.rec_count} 个）`;
+    if (j.over) s += `　⚠ <span style="color:var(--red);">已超限，下次检查将删除最旧文件</span>`;
+    $("quotaInfo").innerHTML = s;
+  } catch (e) { $("quotaInfo").textContent = "读取失败: " + e; }
+}
+$("quotaRefresh").onclick = loadStorageQuota;
+
+$("quotaSave").onclick = async () => {
+  const cap = parseInt($("quota_cap").value, 10);
+  if (isNaN(cap) || cap < 0) { alert("上限请填 0（不限制）或正整数 MB"); return; }
+  try {
+    const j = await (await fetch(API + "/config", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ storage_max_mb: cap }),
+    })).json();
+    if (!j.ok) { alert("保存失败：" + (j.error || "")); return; }
+    alert("已保存：日志+录音合计上限 " + cap + " MB（0 = 不限制）");
+    loadStorageQuota();
+  } catch (e) { alert("保存失败: " + e); }
+};
+
+$("quotaEnforce").onclick = async () => {
+  if (!confirm("立即按当前上限清理：从最旧的文件开始删除，直到低于上限？\n（今天正在写的日志不会被删；此操作不可恢复）")) return;
+  try {
+    const j = await (await fetch(API + "/storage/quota/enforce", { method: "POST" })).json();
+    if (!j.ok) { alert("清理失败：" + (j.error || "")); return; }
+    alert(`已删除 ${j.removed} 个最旧文件，剩余合计 ${j.total_mb} MB / ${j.count} 个文件`);
+    loadStorageQuota();
+  } catch (e) { alert("清理失败: " + e); }
+};
+
+// ---- 每日报警邮件 ----
+let mailPresets = {};
+
+async function loadMail() {
+  try {
+    const j = await (await fetch(API + "/mail")).json();
+    $("m_enabled").checked = !!j.mail_enabled;
+    $("m_time").value = j.mail_send_time || "09:00";
+    $("m_offset").value = String(j.mail_day_offset ?? 1);
+    $("m_host").value = j.mail_host || "";
+    $("m_port").value = j.mail_port || 465;
+    $("m_sec").value = j.mail_ssl ? "ssl" : (j.mail_starttls ? "starttls" : "none");
+    $("m_user").value = j.mail_user || "";
+    $("m_pass").value = "";
+    $("m_to").value = j.mail_to || "";
+    $("m_attach").checked = !!j.mail_attach_csv;
+    $("m_skip").checked = !!j.mail_skip_if_empty;
+    $("mInfo").textContent = j.mail_last_result ? "最近一次：" + j.mail_last_result : "";
+    if (j.presets) mailPresets = j.presets;
+  } catch (e) { $("mInfo").textContent = "读取失败: " + e; }
+}
+
+function collectMail() {
+  return {
+    mail_enabled: $("m_enabled").checked,
+    mail_send_time: $("m_time").value || "09:00",
+    mail_day_offset: parseInt($("m_offset").value, 10),
+    mail_host: $("m_host").value.trim(),
+    mail_port: parseInt($("m_port").value, 10) || 465,
+    mail_ssl: $("m_sec").value === "ssl",
+    mail_starttls: $("m_sec").value === "starttls",
+    mail_user: $("m_user").value.trim(),
+    mail_to: $("m_to").value.trim(),
+    mail_attach_csv: $("m_attach").checked,
+    mail_skip_if_empty: $("m_skip").checked,
+  };
+}
+
+async function saveMail() {
+  const body = collectMail();
+  if ($("m_pass").value) body.mail_password = $("m_pass").value;   // 留空表示不改
+  const j = await (await fetch(API + "/config", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })).json();
+  if (!j.ok) throw new Error(j.error || "保存失败");
+  return j;
+}
+
+$("mSave").onclick = async () => {
+  const on = $("m_enabled").checked;
+  if (on && (!$("m_user").value.trim() || !$("m_host").value.trim())) {
+    alert("开启自动发送前，请先填写发件邮箱账号与 SMTP 服务器。"); return;
+  }
+  try {
+    await saveMail();
+    $("mInfo").textContent = "已保存" + (on ? `，将于每天 ${$("m_time").value} 自动发送` : "（自动发送已关闭）");
+  } catch (e) { $("mInfo").textContent = "保存失败: " + e.message; }
+};
+
+document.querySelectorAll("[data-preset]").forEach(b => b.onclick = () => {
+  const p = (mailPresets || {})[b.dataset.preset];
+  if (!p) return;
+  $("m_host").value = p.mail_host; $("m_port").value = p.mail_port;
+  $("m_sec").value = p.mail_ssl ? "ssl" : (p.mail_starttls ? "starttls" : "none");
+  $("mInfo").textContent = `已填入 ${b.textContent} 的 SMTP 参数，记得点「保存设置」`;
+});
+
+$("mPreview").onclick = async () => {
+  $("mInfo").textContent = "正在生成预览…";
+  try {
+    const j = await (await fetch(API + "/mail/send", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dry_run: true }),
+    })).json();
+    if (!j.ok) { $("mInfo").textContent = "预览失败：" + (j.error || ""); return; }
+    $("mInfo").textContent = `预览：${j.day} 共 ${j.count} 条告警（已在新窗口打开）`;
+    const w = window.open("", "_blank");
+    if (w) { w.document.write(`<meta charset="utf-8"><title>${j.subject}</title>${j.html}`); w.document.close(); }
+  } catch (e) { $("mInfo").textContent = "预览失败: " + e; }
+};
+
+$("mSend").onclick = async () => {
+  if (!$("m_user").value.trim() || !$("m_host").value.trim()) {
+    alert("请先填写发件邮箱账号与 SMTP 服务器，再点保存。"); return;
+  }
+  if (!confirm("立即用当前配置发送一封报警日报邮件？\n（建议先点「预览报表」确认内容）")) return;
+  $("mInfo").textContent = "正在发送…";
+  try {
+    await saveMail();
+    const j = await (await fetch(API + "/mail/send", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    })).json();
+    if (!j.ok) { $("mInfo").textContent = "发送失败：" + (j.error || j.msg || ""); return; }
+    $("mInfo").textContent = "✔ " + j.msg;
+    alert("发送结果：" + j.msg);
+  } catch (e) { $("mInfo").textContent = "发送失败: " + e; }
+};
+
+// ---- 分时段策略（白天 / 晚间）----
+const SCHED_FIELDS = [
+  ["f_day_start", "day_start"], ["f_day_end", "day_end"],
+  ["f_night_start", "night_start"], ["f_night_end", "night_end"],
+  ["f_day_thr", "day_threshold_db"], ["f_night_thr", "night_threshold_db"],
+  ["f_day_sus", "day_sustain_sec"], ["f_night_sus", "night_sustain_sec"],
+  ["f_day_dur", "day_alarm_duration_sec"], ["f_night_dur", "night_alarm_duration_sec"],
+  ["f_day_cd", "day_alarm_cooldown_sec"], ["f_night_cd", "night_alarm_cooldown_sec"],
+];
+let lastPeriod = null;
+
+function fmtSwitch(min) {
+  min = Math.max(0, Math.round(min || 0));
+  return min >= 60 ? `${Math.floor(min / 60)} 小时 ${min % 60} 分` : `${min} 分钟`;
+}
+
+function renderScheduleInfo(j) {
+  if (!j) return;
+  const el = $("schedInfo");
+  const enabled = j.enabled ? "分时段已启用" : "未启用，沿用全局设置";
+  let html = `当前：<b>${j.period_label}</b>（${enabled}）　生效阈值 <b>${j.threshold_db} dB</b>`
+    + ` · 持续 ${j.sustain_sec}s · 报警 ${j.alarm_enabled ? "开" : "关"}`
+    + `　|　距切换约 ${fmtSwitch(j.next_switch_min)}`;
+  if (j.warnings && j.warnings.length) {
+    html += `<br><span style="color:var(--amber);">⚠ ${j.warnings.join("；")}</span>`;
+  }
+  el.innerHTML = html;
+}
+
+async function loadSchedule() {
+  const j = await (await fetch(API + "/schedule")).json();
+  const c = j.config || {};
+  $("f_sched_enabled").checked = !!j.enabled;
+  for (const [id, key] of SCHED_FIELDS) $(id).value = c[key] ?? "";
+  $("f_day_alarm").checked = !!c.day_alarm_enabled;
+  $("f_night_alarm").checked = !!c.night_alarm_enabled;
+  lastPeriod = j.period;
+  renderScheduleInfo(j);
+}
+
+async function saveSchedule() {
+  const payload = { schedule_enabled: $("f_sched_enabled").checked };
+  for (const [id, key] of SCHED_FIELDS) {
+    const v = $(id).value;
+    payload[key] = (key.endsWith("_db") || key.endsWith("_sec")) ? parseFloat(v) : v;
+  }
+  payload.day_alarm_enabled = $("f_day_alarm").checked;
+  payload.night_alarm_enabled = $("f_night_alarm").checked;
+  const j = await (await fetch(API + "/schedule", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })).json();
+  renderScheduleInfo(j);
+  loadPolicy();
+}
+
+["f_sched_enabled", "f_day_alarm", "f_night_alarm"].forEach(id => $(id).onchange = saveSchedule);
+SCHED_FIELDS.forEach(([id]) => $(id).onchange = saveSchedule);
+
+// ---- 报警静音时段 ----
+function fmtDur(s) {
+  s = Math.max(0, Math.round(s || 0));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  const mm = String(m).padStart(2, "0"), ss = String(sec).padStart(2, "0");
+  return h ? `${h}小时${mm}分` : `${mm}:${ss}`;
+}
+
+async function postQuiet(payload) {
+  const r = await fetch(API + "/quiet", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return await r.json();
+}
+
+async function setQuiet(minutes) {
+  try {
+    const j = await postQuiet({ minutes });
+    if (!j.ok) { $("quietInfo").textContent = "设置失败：" + (j.error || ""); return; }
+    $("quietInfo").innerHTML = `🔕 <b>报警静音已生效</b>：到 ${j.until_text}，剩余 ${fmtDur(j.quiet_remaining_sec)}`;
+  } catch (e) {
+    $("quietInfo").textContent = "设置静音请求失败: " + e;
+  }
+}
+
+$("q30").onclick = () => setQuiet(30);
+$("q60").onclick = () => setQuiet(60);
+$("q120").onclick = () => setQuiet(120);
+$("qSet").onclick = () => {
+  const v = parseFloat($("q_custom").value);
+  if (!isFinite(v) || v <= 0) { $("quietInfo").textContent = "请先填写大于 0 的分钟数"; return; }
+  setQuiet(v);
+};
+$("qCancel").onclick = async () => {
+  try {
+    await postQuiet({ cancel: true });
+    $("quietInfo").textContent = "已取消静音：超阈值将恢复发声";
+  } catch (e) {
+    $("quietInfo").textContent = "取消失败: " + e;
+  }
+};
+
+$("testAlarm").onclick = async () => {
+  try {
+    const r = await fetch(API + "/alarm/test"); const j = await r.json();
+    $("alarmTestInfo").textContent = j.msg || (j.ok ? "已试听" : "试听失败");
+  } catch (e) {
+    $("alarmTestInfo").textContent = "试听请求失败: " + e;
+  }
+};
+
+$("resetCfg").onclick = async () => {
+  if (!confirm("确定把阈值/校准/报警/设备等全部恢复为默认设置？")) return;
+  await fetch(API + "/config/reset", { method: "POST" });
+  $("svcInfo").textContent = "已恢复默认设置，正在重新载入…";
+  await loadConfig();
+  await loadSchedule();
+  $("svcInfo").textContent = "已恢复默认设置（阈值 70 / 校准 0 / 报警关 / 设备默认 / 分时段关闭）";
+};
+
+$("restartSvc").onclick = async () => {
+  if (!confirm("确定重启服务？期间页面会短暂断开，约 2 秒后请刷新。")) return;
+  try {
+    const r = await fetch(API + "/service/restart", { method: "POST" });
+    const j = await r.json();
+    $("svcInfo").textContent = j.msg || (j.ok ? "重启中…" : "重启失败");
+  } catch (e) {
+    $("svcInfo").textContent = "服务已断开（正在重启），请刷新页面";
+  }
+};
+
+$("stopSvc").onclick = async () => {
+  if (!confirm("确定停止服务？桌面版会直接退出程序；源码运行的服务也会一并停掉（可用 volmon 重新启动）。")) return;
+  try {
+    const r = await fetch(API + "/service/stop", { method: "POST" });
+    const j = await r.json();
+    $("svcInfo").textContent = j.msg || (j.ok ? "已停止" : "停止失败");
+  } catch (e) {
+    $("svcInfo").textContent = "服务已停止（页面断开属正常）";
+  }
+};
+
+bindAlarmAutosave();
+
+connect(); loadVersion(); loadConfig(); loadSchedule(); loadPolicy(); loadTrend();
+loadAlerts(); loadLogFiles(); loadMail(); loadRecordings(); loadStorageQuota();
+setInterval(loadPolicy, 20000);   // 策略可能随时间段切换而变化，定期刷新明细
+setInterval(loadTrend, 30000); setInterval(loadAlerts, 15000);
+setInterval(loadLogFiles, 60000); // 日志文件清单（跨日切割后能看到新归档）
+setInterval(loadRecordings, 30000);
+setInterval(loadStorageQuota, 60000); // 存储配额占用（每分钟刷新）
+</script>
+</body>
+</html>

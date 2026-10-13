@@ -1,0 +1,40 @@
+# 运行产物（按《开发规范》§6）
+data/
+__pycache__/
+*.pyc
+*.db
+*.log
+
+# 跨平台启动器（launcher.py / volmon.bat）写入的后台服务 PID
+.volmon.pid
+
+# 虚拟环境
+venv/
+.venv/
+
+# 打包
+dist/
+build/
+*.spec
+
+# 手工维护的 macOS 打包配置，需要入库
+!volmon-mac.spec
+
+# 手工维护的 Windows 打包配置，需要入库
+!volmon-win.spec
+
+*.dmg
+dmg_staging/
+
+# 安卓构建工具链（JDK/Gradle/SDK 持久目录，体积大，不入库）
+.android-build/
+
+# 编辑器
+.vscode/
+.idea/
+
+# 系统 / 工具链杂项
+.DS_Store
+.pytest_cache/
+# 本仓库的 agent 工作记忆（含个人路径与内部约定，不入库）
+.workbuddy/
