@@ -36,6 +36,9 @@
   #banner.alert { display: block; background: var(--red); color: #fff; }
   #banner.over { display: block; background: #fee2e2; color: var(--red); border-top: 1px solid var(--red); }
   .btns { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  .rename-row { display: flex; gap: 6px; margin: 4px 0 10px; }
+  .rename-row input { margin: 0; }
+  .rename-row button { white-space: nowrap; }
   button {
     background: var(--accent); color: #fff; border: 0; padding: 7px 12px; border-radius: 8px;
     cursor: pointer; font-size: 13px;
@@ -88,6 +91,7 @@
           <button class="ghost" data-h="1">近 1 小时</button>
           <button class="ghost" data-h="24">近 24 小时</button>
           <button class="ghost" data-h="168">近 7 天</button>
+          <button class="ghost" id="dlTrendCsv" title="导出该区间：统计汇总 + 趋势图 + 预警明细 + 原始数据">下载 CSV</button>
         </div>
         <canvas id="trend" height="200"></canvas>
         <div class="muted" id="trendStat"></div>
@@ -104,10 +108,19 @@
 
       <div class="panel" style="margin-top:14px;">
         <h2>校准（专业设备对齐）</h2>
+        <div class="muted" id="calDevice">当前采集设备：读取中…</div>
+        <div class="muted" id="pathWarn"></div>
         <label>用专业声级计测得的环境真实 dB</label>
         <input id="meas" type="number" step="0.1" placeholder="例如 65.0" />
-        <button id="calBtn">一键校准</button>
-        <div class="muted" id="calInfo">未校准时显示的是<b>估算声压级</b>（dBFS + 参考偏移 90），仅供趋势参考；用专业设备「一键校准」后即为真实 dB SPL。</div>
+        <label>取样窗口（秒；环境起伏大时可加长到 10~15）</label>
+        <input id="calWindow" type="number" step="1" value="5" />
+        <div class="btns">
+          <button id="calBtn">一键校准（该设备）</button>
+          <button class="ghost" id="calClearBtn">清除该设备校准</button>
+        </div>
+        <label>读数平滑（秒；0=瞬时值，默认 0.5 近似声级计读数）</label>
+        <input id="f_smooth" type="number" step="0.25" />
+        <div class="muted" id="calInfo">每台麦克风的灵敏度不同，校准值<b>按「设备 + 通路」分别保存</b>：同一麦克风走 MME 与 DirectSound 时电平可能差十几 dB（本机实测 DirectSound 通路甚至完全静音），所以通路一变就会提示重新校准。</div>
       </div>
 
       <div class="panel" style="margin-top:14px;">
@@ -122,10 +135,20 @@
         <input id="f_log" type="number" step="100" />
         <label>输入设备（麦克风）</label>
         <select id="f_device"></select>
+        <div class="rename-row">
+          <input id="devAlias" placeholder="给所选设备起个好记的名字（如 3.5mm耳麦）" />
+          <button class="ghost" id="setDevAlias">重命名</button>
+        </div>
+        <div class="btns" style="align-items:center;">
+          <label style="display:flex;align-items:center;gap:4px;" title="勾选后列出全部原始设备：同一硬件的 MME/DirectSound/WASAPI/WDM-KS 各通路、系统虚拟映射器、立体声混音等">
+            <input id="devShowAll" type="checkbox" style="width:auto;margin:0;" /> 显示全部设备（含重复通路 / 底层端点）
+          </label>
+        </div>
         <div class="btns">
           <button class="ghost" id="rescanDev">🔄 刷新输入设备列表</button>
         </div>
         <div class="muted" id="devInfo">插入 USB 声卡/耳机后若列表里没有新设备，点「刷新」即可（会短暂中断采集约 1 秒），无需重启服务。</div>
+        <div class="muted" id="devListNote"></div>
         <button id="saveBtn">保存设置</button>
         <div class="muted" id="saveInfo"></div>
       </div>
@@ -142,12 +165,18 @@
         <input id="f_alarm_cooldown" type="number" step="0.5" min="0" />
         <label>报警声输出设备（3.5mm 耳机 / USB 耳机 / 本机扬声器）</label>
         <select id="f_alarm_output"></select>
+        <div class="rename-row">
+          <input id="outAlias" placeholder="给所选输出设备起个好记的名字（如 我的USB耳机）" />
+          <button class="ghost" id="setOutAlias">重命名</button>
+        </div>
         <div class="muted" id="outStat"></div>
         <div class="btns">
+          <button id="saveAlarm">💾 保存报警设置</button>
           <button id="testAlarm">🔊 试听报警音</button>
           <button class="ghost" id="rescanOut">🔄 刷新输出设备列表</button>
         </div>
-        <div class="muted" id="alarmInfo">勾选/修改后<b>立即生效</b>（无需点其他面板的保存）。报警需音量<b>持续超过阈值</b>才触发。</div>
+        <div class="muted" id="alarmInfo">改完<b>报警开关 / 时长 / 输出设备</b>后，请点「💾 保存报警设置」才会生效。报警需音量<b>持续超过阈值</b>才触发。</div>
+        <div class="muted" id="alarmSaveInfo"></div>
         <div class="muted" id="alarmTestInfo"></div>
         <div class="muted">报警声会被本机麦克风拾回，故<b>播放期间 + 冷却期间</b>不写入噪音采样、也不触发噪声预警，避免自激；冷却结束后恢复检测。</div>
       </div>
@@ -217,6 +246,25 @@
 
         <div class="muted" id="schedInfo"></div>
         <div class="muted">修改后<b>立即生效</b>（无需保存/重启）。例：白天 70 dB 只记录不报警，晚间 55 dB 且开启报警。</div>
+      </div>
+
+      <div class="panel" style="margin-top:14px;">
+        <h2>存储路径（自定义）</h2>
+        <label>录音存储目录（WAV 按日分目录 · 改后<b>立即生效</b>）</label>
+        <input id="p_rec_dir" />
+        <label>运行日志文件（改后需<b>重启服务</b>）</label>
+        <input id="p_log_path" />
+        <label>采样数据库（改后需重启服务）</label>
+        <input id="p_db_path" />
+        <label>超量告警 CSV（改后需重启服务）</label>
+        <input id="p_alerts_csv_path" />
+        <div class="btns">
+          <button id="savePaths">保存路径</button>
+          <button class="ghost" id="resetPaths">恢复默认路径</button>
+        </div>
+        <div class="muted" id="pathInfo"></div>
+        <div class="muted" id="pathActual"></div>
+        <div class="muted">可填<b>绝对路径</b>（如 D:/volmon/recordings、E:/logs/volmon.log）或<b>相对路径</b>（相对程序数据目录）。目录不存在会自动创建；<b>不可写时会拒绝保存</b>，避免录音/日志静默失效。录音目录改后即刻用于新录音；日志与数据库句柄在服务启动时绑定，故需重启。</div>
       </div>
 
       <div class="panel" style="margin-top:14px;">
@@ -316,6 +364,23 @@
             <input id="r_cut" type="checkbox" style="width:auto;margin:0;" /> 报警触发即截断（仅保留触发前）
           </label>
         </div>
+        <label>录音增益（回放音量）</label>
+        <select id="r_gain_mode">
+          <option value="off">原始音量（默认·不处理，听感最真实）</option>
+          <option value="fixed">固定增益（按下面 dB 放大/衰减）</option>
+          <option value="auto">自动最大化（峰值归一化到满刻度）</option>
+        </select>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+          <input id="r_gain_db" type="range" min="-20" max="40" step="1" style="flex:1;" />
+          <input id="r_gain_db_num" type="number" min="-60" max="60" step="1"
+                 style="width:88px;" />
+          <span class="muted" id="r_gain_txt" style="min-width:92px;"></span>
+        </div>
+        <div class="muted" style="margin:2px 0 8px;">
+          增益越大回放越响，但<b>底噪和混响会被同比例放大</b>——开太大反而"更响却更听不清"，
+          超出 0 dBFS 还会<b>削波失真</b>。默认「原始音量」保存麦克风录到的本来样子；
+          录音太小声再逐步上调（建议先从 +10 ~ +20 dB 试起）。改动对<b>之后</b>的录音生效。
+        </div>
         <div class="muted" style="margin:-2px 0 8px;">
           开启「报警触发即截断」后，只要一报警，正在录的这段就<b>立刻停在触发那一刻</b>——
           只保留触发<b>之前</b>那段真实环境音，报警声本身<b>绝不会</b>被录进 WAV
@@ -333,28 +398,6 @@
           声音一直在**内存环形缓冲**里滚动保留最近若干秒，报警触发时直接把"触发前"那段取出来，
           <b>不会因为程序反应慢而漏掉开头</b>；再接着录"触发后"几秒，拼成完整一段存为 WAV。
           录音按日存放在 <code>data/recordings/YYYY-MM-DD/</code>。「立即清理」会<b>清空所有历史录音</b>（不可恢复）；超出保留天数(默认 30 天)/配额(默认 500 个 / 2GB)的文件仍会在后台自动删最旧的。
-        </div>
-      </div>
-
-      <div class="panel" style="margin-top:14px;">
-        <h2>本地存储配额（日志 + 录音）</h2>
-        <div id="quotaInfo" class="muted">读取中…</div>
-        <div style="display:flex;gap:6px;align-items:flex-end;margin-top:8px;">
-          <div style="flex:1;">
-            <label>日志 + 录音合计上限（MB）</label>
-            <input id="quota_cap" type="number" min="0" step="128" style="width:100%;" />
-          </div>
-          <div class="btns" style="padding-bottom:0;">
-            <button id="quotaSave">保存上限</button>
-            <button class="ghost" id="quotaEnforce">立即清理（删最旧）</button>
-            <button class="ghost" id="quotaRefresh">刷新</button>
-          </div>
-        </div>
-        <div class="muted" style="margin-top:8px;">
-          合计超过此上限时，服务会<b>每 5 分钟自动从最旧的文件开始删除</b>（先清归档日志与历史录音，
-          不动"今天"正在写的日志），直到低于上限——相当于"新的覆盖老的"，避免把磁盘撑爆。
-          <b>0 = 不限制</b>（仅沿用上面各项独立配额）。<code>volmon.db</code> 采样库不参与此配额，
-          请用「日志维护（清空）」控制其体积。
         </div>
       </div>
 
@@ -428,11 +471,18 @@
 const WS = ((location.protocol === "https:") ? "wss://" : "ws://") + location.host + "/ws";
 const API = location.origin + "/api";
 let ws = null, waveBuf = [], peakDb = 0, threshold = 70, calibrated = false;
+let calibSource = "estimate";   // path=本机本通路 / device=本机其它通路 / global=旧全局值 / estimate=未校准
+let calibExact = false;
 let trendHours = 24;
 
 const $ = id => document.getElementById(id);
 const ctxWave = $("wave").getContext("2d");
 const ctxTrend = $("trend").getContext("2d");
+
+function calibLabel(cal, src, exact) {
+  if (!cal) return (src === "global") ? "沿用旧校准值" : "未校准(估算)";
+  return exact ? "已校准" : "已校准(通路有变)";
+}
 
 function setBanner(alert, over) {
   const b = $("banner");
@@ -467,13 +517,14 @@ function updateDeviceStat(info, outDevice) {
     return;
   }
   const sr = info.samplerate ? ` · ${Math.round(info.samplerate)}Hz` : "";
-  let txt = `采集设备：${info.name}（索引 ${info.index}${sr}）`;
-  const sel = $("f_device").value;
+  const shown = info.display && info.display !== info.name ? `${info.display}（${info.name}）` : (info.name || "");
+  let txt = `采集设备：${shown}（索引 ${info.index}${sr}）`;
+  // 比较"引擎生效设备"与"实际打开设备"：用 info.configured 而非下拉临时值，
+  // 避免同名/同硬件不同 host API 名字（如 WDM-KS 名 vs MME 名）造成的虚假不一致告警。
+  const sel = info.configured || "";
   let warn = "";
-  if (sel && sel !== "default" && info.name !== sel) {
+  if (sel && sel !== "default" && info.name && info.name !== sel) {
     warn = `　⚠ 实际与所选「${sel}」不一致`;
-  } else if (sel === "default" && info.index !== null) {
-    // 默认设备：不视为不一致，仅提示
   }
   txt += warn;
   el.textContent = txt;
@@ -488,29 +539,55 @@ function sustainHint() {
   return isNaN(s) ? "3" : s;
 }
 
-function bindAlarmAutosave() {
+function bindAlarmSave() {
+  // 显式「保存报警设置」按钮：把报警开关 / 时长 / 输出设备统一提交，
+  // 不再在每次 change 时静默自动保存（用户曾反馈"改了不生效"，根因之一是
+  // 自动保存无反馈、且保存与即时生效脱节）。现在必须点按钮才保存，并给出明确结果。
   const save = async () => {
+    const outName = $("f_alarm_output").selectedOptions[0]
+      ? $("f_alarm_output").selectedOptions[0].textContent : "系统默认";
     const vals = {
       alarm_enabled: $("f_alarm_enabled").checked,
       alarm_duration_sec: parseFloat($("f_alarm_duration").value),
       alarm_cooldown_sec: parseFloat($("f_alarm_cooldown").value),
       alarm_output_device: $("f_alarm_output").value || "",
     };
-    await fetch(API + "/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(vals),
-    });
+    const info = $("alarmSaveInfo");
+    info.style.color = "";
+    info.textContent = "保存中…";
+    try {
+      const r = await fetch(API + "/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(vals),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j.ok) {
+        info.style.color = "var(--ok,#2a9d4a)";
+        info.textContent = `✅ 已保存并立即生效：${vals.alarm_enabled ? "报警开启" : "报警关闭"} · ${vals.alarm_duration_sec}s / 冷却 ${vals.alarm_cooldown_sec}s · 输出设备：${outName}`;
+        loadPolicy();
+      } else {
+        info.style.color = "var(--bad,#d6453d)";
+        info.textContent = "❌ 保存失败：" + (j.error || ("HTTP " + r.status));
+      }
+    } catch (e) {
+      info.style.color = "var(--bad,#d6453d)";
+      info.textContent = "❌ 保存请求失败：" + e;
+    }
+    setTimeout(() => { if (info.textContent.startsWith("✅") || info.textContent.startsWith("❌")) info.textContent = ""; }, 4000);
+  };
+  $("saveAlarm").onclick = save;
+  // 仅做即时提示，不自动保存：让用户明确点「保存报警设置」
+  const hint = () => {
     const outName = $("f_alarm_output").selectedOptions[0]
       ? $("f_alarm_output").selectedOptions[0].textContent : "系统默认";
     $("alarmInfo").textContent =
-      `已即时生效：${vals.alarm_enabled ? "报警开启" : "报警关闭"} · ${vals.alarm_duration_sec}s / 冷却 ${vals.alarm_cooldown_sec}s · 输出：${outName}`;
-    loadPolicy();
+      `当前选择：输出设备 = ${outName}。改完后请点「💾 保存报警设置」才会生效。`;
   };
-  $("f_alarm_enabled").onchange = save;
-  $("f_alarm_duration").onchange = save;
-  $("f_alarm_cooldown").onchange = save;
-  $("f_alarm_output").onchange = save;
+  $("f_alarm_output").onchange = hint;
+  $("f_alarm_enabled").onchange = hint;
+  $("f_alarm_duration").onchange = hint;
+  $("f_alarm_cooldown").onchange = hint;
 }
 
 function connect() {
@@ -521,13 +598,15 @@ function connect() {
     const d = JSON.parse(ev.data);
     if (d.type === "config_applied") return;
     threshold = d.threshold; calibrated = d.calibrated;
+    if (d.calib_source) { calibSource = d.calib_source; calibExact = !!d.calib_exact; }
     $("cur").textContent = d.db.toFixed(1);
     $("raw").textContent = d.raw_db.toFixed(1);
     $("thr").textContent = d.threshold.toFixed(1);
     peakDb = Math.max(peakDb, d.db);
     $("peak").textContent = peakDb.toFixed(1);
-    $("calib").textContent = calibrated ? "已校准" : "未校准(估算)";
+    $("calib").textContent = calibLabel(calibrated, calibSource, calibExact);
     $("calib").className = "pill " + (calibrated ? "ok" : "warn");
+    showPathWarning(d.input_device);
     if (d.version) showVersion(d.version, d.version_display);
     updateDeviceStat(d.input_device, d.alarm_output_device);
     // 时段发生切换时刷新分时段面板（生效阈值会随之变化）
@@ -622,6 +701,9 @@ function drawWave() {
 }
 
 async function loadTrend() {
+  // 预警次数与采样并行拉取，避免串行拖慢趋势绘制
+  const cntP = fetch(API + "/alerts/count?hours=" + trendHours)
+    .then(r => r.json()).then(j => j.total || 0).catch(() => 0);
   const r = await fetch(API + "/samples?hours=" + trendHours);
   const rows = await r.json();
   $("trendRange").textContent = "(近 " + (trendHours>=168? "7 天": trendHours+" 小时") + ")";
@@ -631,7 +713,7 @@ async function loadTrend() {
   const pw = w - padL - padR, ph = h - padT - padB;
   const { lo, hi, step } = yRange(rows.map(r => r.db), threshold);
   const y = v => padT + ph - (Math.min(Math.max(v, lo), hi) - lo) / (hi - lo) * ph;
-  if (!rows.length) { $("trendStat").textContent = "暂无数据"; return; }
+  if (!rows.length) { $("trendStat").textContent = "暂无数据 · 预警 " + (await cntP) + " 次"; return; }
   let max = -1e9, sum = 0, overCount = 0;
   ctxTrend.font = "11px -apple-system, 'Microsoft YaHei', sans-serif";
   ctxTrend.textBaseline = "middle"; ctxTrend.textAlign = "right";
@@ -668,7 +750,8 @@ async function loadTrend() {
   ctxTrend.fillText(fmt((t0+t1)/2), padL + pw/2, padT + ph + 5);
   ctxTrend.fillText(fmt(t1), padL + pw, padT + ph + 5);
   const avg = sum / rows.length;
-  $("trendStat").textContent = `均值 ${avg.toFixed(1)} dB · 峰值 ${max.toFixed(1)} dB · 超阈值采样点占比 ${(overCount/rows.length*100).toFixed(1)}%`;
+  const alertN = await cntP;
+  $("trendStat").textContent = `均值 ${avg.toFixed(1)} dB · 峰值 ${max.toFixed(1)} dB · 超阈值采样点占比 ${(overCount/rows.length*100).toFixed(1)}% · 预警 ${alertN} 次`;
 }
 
 const ALERT_PAGE_SIZE = 100;   // 每页条数（前端只做分页，数据一条不丢）
@@ -747,14 +830,57 @@ async function loadVersion() {
 
 // ---- 输入/输出设备下拉 ----
 // 若配置里存的设备已不在列表中（被拔掉），仍保留一项并标注，避免静默丢失配置。
+// 设备显示：优先用友好别名（如"3.5mm耳麦"）。
+// Windows 同一物理设备会被 MME/DirectSound/WASAPI/WDM-KS 各列一份：后端已合并成一项，
+// 只有在「显示全部设备」时才会出现同名多份，此时附上 host API 便于区分。
 function fillDeviceSelect(sel, devs, current, defVal, defLabel) {
-  const opts = [`<option value="${defVal}">${defLabel}</option>`]
-    .concat(devs.map(x => `<option value="${x.name}">${x.name}</option>`));
-  if (current && current !== defVal && !devs.some(x => x.name === current)) {
+  const list = devs || [];
+  const counts = {};
+  list.forEach(x => { const k = x.group || x.name; counts[k] = (counts[k] || 0) + 1; });
+  const opts = [`<option value="${defVal}">${defLabel}</option>`];
+  list.forEach(x => {
+    let label = x.display || x.name;
+    if ((counts[x.group || x.name] || 0) > 1) label += ` · ${x.hostapi || ""}`;
+    if (x.hidden_reason) label += " · 底层/回环";
+    const title = x.hidden_reason || (x.alt_hostapis && x.alt_hostapis.length
+      ? `已合并 ${x.variant_count} 个通路（另含 ${x.alt_hostapis.join("、")}）` : "");
+    opts.push(`<option value="${x.name}"${title ? ` title="${title}"` : ""}>${label}</option>`);
+  });
+  if (current && current !== defVal && !list.some(x => x.name === current)) {
     opts.push(`<option value="${current}">${current}（当前未连接）</option>`);
   }
   sel.innerHTML = opts.join("");
   sel.value = current || defVal;
+}
+
+// 下拉下方提示：告诉用户哪些重复/底层设备被合并隐藏了，以及如何还原
+function deviceListNote(devData, outData, showAll) {
+  const n = (devData && devData.hidden_count || 0) + (outData && outData.hidden_count || 0);
+  const cnt = (devData && devData.devices.length || 0) + (outData && outData.devices.length || 0);
+  if (showAll) return `当前显示全部：已列出全部 ${cnt} 项原始设备（含各 host API 通路与底层端点）。`;
+  if (n > 0) return `已精简：同一设备的重复通路已合并，另隐藏 ${n} 个系统虚拟设备 / 回环混音 / WDM-KS 底层端点。`;
+  return `已列出 ${cnt} 个设备（本机无重复通路，无需精简）。`;
+}
+
+let devData = null, outData = null;
+
+async function loadDeviceLists(curIn, curOut) {
+  const d = await fetch(API + "/devices"); devData = await d.json();
+  fillDeviceSelect($("f_device"), devData.devices,
+                   curIn !== undefined ? curIn : $("f_device").value, "default", "默认设备");
+  try {
+    const o = await fetch(API + "/output-devices"); outData = await o.json();
+    fillDeviceSelect($("f_alarm_output"), outData.devices,
+                     curOut !== undefined ? curOut : $("f_alarm_output").value,
+                     "", "系统默认输出设备");
+  } catch (e) {
+    outData = { devices: [], hidden_count: 0 };
+    fillDeviceSelect($("f_alarm_output"), [], $("f_alarm_output").value,
+                     "", "系统默认输出设备");
+  }
+  const showAll = !!(devData.show_all || (outData && outData.show_all));
+  if ($("devShowAll")) $("devShowAll").checked = showAll;
+  if ($("devListNote")) $("devListNote").textContent = deviceListNote(devData, outData, showAll);
 }
 
 async function loadConfig() {
@@ -765,42 +891,67 @@ async function loadConfig() {
   $("f_alarm_duration").value = c.alarm_duration_sec; $("f_alarm_cooldown").value = c.alarm_cooldown_sec;
   window.alertsCsvPath = c.alerts_csv_path;
   if ($("clrCsv")) $("clrCsv").textContent = c.alerts_csv_path;
-  threshold = c.threshold_db; calibrated = Math.abs(c.calib_offset_db) > 1e-6;
+  $("f_smooth").value = (c.meter_smooth_sec !== undefined) ? c.meter_smooth_sec : 0.5;
+  threshold = c.threshold_db;
+  await loadDeviceLists(c.device || "default", c.alarm_output_device || "");
 
-  const d = await fetch(API + "/devices"); const devs = await d.json();
-  fillDeviceSelect($("f_device"), devs, c.device || "default", "default", "默认设备");
+  // 预填当前设备的自定义别名（用于"重命名设备"）
+  const aliases = c.device_aliases || {};
+  $("devAlias").value = aliases[c.device] || "";
+  $("outAlias").value = aliases[c.alarm_output_device] || "";
 
-  try {
-    const o = await fetch(API + "/output-devices"); const outs = await o.json();
-    fillDeviceSelect($("f_alarm_output"), outs, c.alarm_output_device || "",
-                     "", "系统默认输出设备");
-  } catch (e) {
-    fillDeviceSelect($("f_alarm_output"), [], c.alarm_output_device || "",
-                     "", "系统默认输出设备");
-  }
+  loadPaths();   // 预填「存储路径」面板
+  loadCalib();   // 预填「校准」面板：当前采集设备及其专属校准偏移
 }
 
 // 重新扫描：PortAudio 在进程内只枚举一次，热插拔后需要它才能看到新设备
 async function rescanDevices(focus) {
   const j = await (await fetch(API + "/devices/rescan", { method: "POST" })).json();
   if (!j.ok) throw new Error(j.msg || "扫描失败");
+  const curIn = $("f_device").value, curOut = $("f_alarm_output").value;
+  const noteAll = j.show_all;
+  devData = { devices: j.devices, hidden_count: 0 };
+  outData = { devices: j.output_devices || [], hidden_count: 0 };
   if (focus !== "out") {
-    fillDeviceSelect($("f_device"), j.devices, $("f_device").value, "default", "默认设备");
+    fillDeviceSelect($("f_device"), j.devices, curIn, "default", "默认设备");
   }
-  fillDeviceSelect($("f_alarm_output"), j.output_devices || [], $("f_alarm_output").value,
+  fillDeviceSelect($("f_alarm_output"), j.output_devices || [], curOut,
                    "", "系统默认输出设备");
+  if ($("devListNote")) {
+    $("devListNote").textContent = noteAll
+      ? `当前显示全部：已列出全部 ${j.devices.length + (j.output_devices || []).length} 项原始设备。`
+      : `已刷新：输入 ${j.devices.length} 个 / 输出 ${(j.output_devices || []).length} 个`
+        + (j.hidden_count ? `，另隐藏 ${j.hidden_count} 个重复通路与底层端点。` : "。");
+  }
   return j;
 }
 
 $("rescanDev").onclick = async () => {
-  $("devInfo").textContent = "正在重新扫描音频设备…（采集会中断约 1 秒）";
+  $("devInfo").textContent = "正在扫描音频设备…（用独立进程枚举，采集不会中断）";
   try {
     const j = await rescanDevices("in");
-    $("devInfo").textContent =
-      `已刷新：输入 ${j.devices.length} 个 / 输出 ${(j.output_devices || []).length} 个。选中后记得点「保存设置」。`
-      + (j.devices.length ? "" : "（未发现输入设备，请检查连接）");
+    let msg = `已刷新：输入 ${j.devices.length} 个 / 输出 ${(j.output_devices || []).length} 个。选中后记得点「保存设置」。`;
+    if (j.need_restart) {
+      msg += `　⚠ ${j.msg || "有设备需重启服务后才能在列表里选中"}`;
+    }
+    $("devInfo").textContent = msg + (j.devices.length ? "" : "（未发现输入设备，请检查连接）");
+    loadCalib();   // 设备清单变了，顺带刷新"当前设备/通路/校准"状态
   } catch (e) {
     $("devInfo").textContent = "刷新失败：" + e.message;
+  }
+};
+
+// 「显示全部设备」开关：写回配置，让刷新/重启后保持一致；同时刷新两个下拉
+$("devShowAll").onchange = async () => {
+  const val = $("devShowAll").checked;
+  try {
+    await fetch(API + "/config", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ show_all_devices: val }),
+    });
+    await loadDeviceLists();
+  } catch (e) {
+    $("devListNote").textContent = "切换失败：" + e.message;
   }
 };
 
@@ -815,15 +966,112 @@ $("rescanOut").onclick = async () => {
   }
 };
 
+// 给当前选中的设备设/清友好别名，并即时刷新下拉（持久化到 config.device_aliases）
+async function renameDevice(selId, aliasId, infoId) {
+  const sel = $(selId);
+  const name = sel.value;
+  const alias = $(aliasId).value.trim();
+  if (!name || name === "default") {
+    $(infoId).textContent = "请先在下拉里选中一个具体设备，再命名。";
+    return;
+  }
+  const r = await fetch(API + "/device-alias", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, alias }),
+  });
+  const j = await r.json();
+  if (!j.ok) { $(infoId).textContent = "命名失败：" + (j.error || ""); return; }
+  $(infoId).textContent = alias
+    ? `已将该设备命名为「${alias}」`
+    : `已清除「${name}」的自定义名称`;
+  // 重新拉取列表并按当前选择刷新下拉（接口返回 {devices:[...]}）
+  if (selId === "f_device") {
+    const d = await (await fetch(API + "/devices")).json();
+    fillDeviceSelect($("f_device"), d.devices, name, "default", "默认设备");
+  } else {
+    const o = await (await fetch(API + "/output-devices")).json();
+    fillDeviceSelect($("f_alarm_output"), o.devices, name, "", "系统默认输出设备");
+  }
+}
+$("setDevAlias").onclick = () => renameDevice("f_device", "devAlias", "devInfo");
+$("setOutAlias").onclick = () => renameDevice("f_alarm_output", "outAlias", "alarmTestInfo");
+
+// Windows 上同一麦克风走不同 host API 通路（MME/DirectSound/WASAPI）时电平可能差十几 dB，
+// 首选通路打不开而被迫改道时必须让用户看见——否则读数会"莫名其妙变了"。
+function showPathWarning(info) {
+  const el = $("pathWarn");
+  if (!el) return;
+  const fb = info && info.fallback;
+  if (fb) {
+    el.innerHTML = `⚠ <b>采集通路已被改动</b>：${info.fallback_reason || ""}`
+      + `　当前通路：<b>${info.hostapi || "未知"}</b>。`;
+    el.style.color = "var(--red)";
+  } else {
+    el.textContent = info && info.hostapi ? `当前通路：${info.hostapi}（读数与该通路上的校准值对应）` : "";
+    el.style.color = "var(--muted)";
+  }
+}
+
+// ---------- 校准（按设备 + 通路分别保存） ----------
+async function loadCalib(msg) {
+  const win = parseFloat($("calWindow")?.value || "5") || 5;
+  let j;
+  try {
+    j = await (await fetch(API + `/calib?window=${win}`)).json();
+  } catch (e) { return; }
+  if (!j.ok) return;
+  calibrated = !!j.calibrated;
+  calibSource = j.source || "estimate";
+  calibExact = !!j.path_exact;
+  const dv = j.device || "默认设备";
+  const path = j.hostapi || "未知通路";
+  let state;
+  if (j.silent) {
+    state = "⚠ 麦克风无有效信号，此状态下的校准结果不可用";
+  } else if (j.fallback) {
+    state = `⚠ ${j.fallback_reason || "采集通路已被改动"}（读数与校准值可能不匹配）`;
+  } else if (!j.calibrated) {
+    state = (j.source === "global")
+      ? `未校准：沿用旧全局偏移 ${j.offset} dB（换过设备时不准确，建议重新校准）`
+      : `未校准：当前读数是估算值 ${j.displayed} dB（dBFS + 参考偏移 ${j.ref_offset_db}）`;
+  } else if (!j.path_exact) {
+    state = `已校准 ${j.offset} dB，但该值是在<b>另一条通路</b>上测的，建议按当前通路重新校准`;
+  } else {
+    state = `已校准 ${j.offset} dB（读数已对齐专业设备）`;
+  }
+  $("calDevice").innerHTML = `当前采集设备：<b>${dv}</b>　|　通路：<b>${path}</b>　|　${state}`;
+  $("calib").textContent = calibLabel(calibrated, calibSource, calibExact);
+  $("calib").className = "pill " + (calibrated ? "ok" : "warn");
+  if (msg) $("calInfo").innerHTML = msg;
+  return j;
+}
+
 $("calBtn").onclick = async () => {
   const meas = parseFloat($("meas").value);
   if (!meas) return alert("请输入专业设备测得的真实 dB");
-  const r = await fetch(API + "/raw_avg?n=150"); const j = await r.json();
-  const base = (typeof j.base_avg === "number") ? j.base_avg : j.raw_avg;
-  const offset = +(meas - base).toFixed(2);
-  await fetch(API + "/config", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({calib_offset_db: offset})});
-  $("calInfo").textContent = `校准前估算 ${base.toFixed(1)} dB → 修正 ${offset>0?"+":""}${offset} dB 已应用（读数已对齐专业设备）`;
-  calibrated = true;
+  const win = parseFloat($("calWindow").value || "5") || 5;
+  const j = await (await fetch(API + "/calib", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({real_db: meas, window: win}),
+  })).json();
+  if (!j.ok) return alert("校准失败：" + (j.error || "未知错误"));
+  loadCalib(`校准前估算 <b>${j.base_avg.toFixed(1)}</b> dB → 修正 <b>${j.applied > 0 ? "+" : ""}${j.applied}</b> dB 已写入「${j.device}」；同一环境下读数应与声级计一致。`);
+};
+
+$("calClearBtn").onclick = async () => {
+  const j = await (await fetch(API + "/calib", {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({clear: true}),
+  })).json();
+  if (!j.ok) return alert("清除失败：" + (j.error || "未知错误"));
+  loadCalib("已清除该设备的校准记录，读数回到未校准估算。");
+};
+
+$("f_smooth").onchange = async () => {
+  const v = parseFloat($("f_smooth").value);
+  await fetch(API + "/config", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({meter_smooth_sec: Math.max(0, isNaN(v) ? 0 : v)})});
+  $("calInfo").textContent = "读数平滑已更新（0 = 每个音频块的瞬时值，0.5 秒 ≈ 声级计读数）";
 };
 
 $("saveBtn").onclick = async () => {
@@ -836,14 +1084,84 @@ $("saveBtn").onclick = async () => {
     alarm_enabled: $("f_alarm_enabled").checked,
     alarm_duration_sec: parseFloat($("f_alarm_duration").value),
     alarm_cooldown_sec: parseFloat($("f_alarm_cooldown").value),
+    alarm_output_device: $("f_alarm_output").value || "",
   };
   await fetch(API + "/config", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(vals)});
   threshold = vals.threshold_db;
   $("saveInfo").textContent = "已保存并立即生效";
   setTimeout(()=>$("saveInfo").textContent="", 2500);
+  // 换了麦克风：等采集流热切换完成（约 1 秒）后刷新"该设备的校准状态"
+  setTimeout(loadCalib, 1200);
+};
+
+// ---- 自定义存储路径（日志 / 录音 / 数据库 / CSV） ----
+async function loadPaths() {
+  try {
+    const j = await (await fetch(API + "/paths")).json();
+    const ps = j.paths || {};
+    for (const [k, v] of Object.entries(ps)) {
+      const el = $("p_" + k);
+      if (el) {
+        // 一律以**绝对路径**显示当前值与默认值（相对写法不直观，看不出真实落盘位置）
+        el.value = v.resolved || v.value || "";
+        el.placeholder = v.default_resolved || v.default || "";
+      }
+    }
+    $("pathActual").innerHTML = Object.values(ps).map(v =>
+      `${v.label}：${v.resolved || "(未设置)"}（${v.writable ? "可写" : "不可写/不存在"}）`
+    ).join("<br>");
+  } catch (e) {
+    $("pathInfo").textContent = "读取路径失败：" + e.message;
+  }
+}
+
+$("savePaths").onclick = async () => {
+  const body = {
+    rec_dir: $("p_rec_dir").value.trim(),
+    log_path: $("p_log_path").value.trim(),
+    db_path: $("p_db_path").value.trim(),
+    alerts_csv_path: $("p_alerts_csv_path").value.trim(),
+  };
+  $("pathInfo").textContent = "正在校验并保存…";
+  const r = await fetch(API + "/paths", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = await r.json();
+  if (!j.ok) {
+    const errs = Object.entries(j.errors || {}).map(([k, m]) => `${k}: ${m}`).join("；");
+    $("pathInfo").textContent = "保存失败：" + (errs || j.error || "未知错误");
+  } else {
+    const n = Object.keys(j.applied || {}).length;
+    $("pathInfo").textContent = n
+      ? `已保存 ${n} 项 · ` + (j.need_restart
+          ? "日志/数据库需「重启服务」后才生效"
+          : "录音目录已立即生效")
+      : "路径未变化";
+  }
+  loadPaths();
+};
+
+$("resetPaths").onclick = async () => {
+  const j = await (await fetch(API + "/paths")).json();
+  const body = {};
+  // 恢复默认也写回**绝对路径**，与面板显示保持一致
+  for (const [k, v] of Object.entries(j.paths || {})) {
+    body[k] = v.default_resolved || v.default || "";
+  }
+  const r = await fetch(API + "/paths", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const jj = await r.json();
+  $("pathInfo").textContent = jj.ok
+    ? "已恢复默认路径" + (jj.need_restart ? "（需重启服务生效）" : "")
+    : "恢复失败：" + Object.values(jj.errors || {}).join("；");
+  loadPaths();
 };
 
 document.querySelectorAll("[data-h]").forEach(b => b.onclick = () => { trendHours = +b.dataset.h; loadTrend(); });
+$("dlTrendCsv").onclick = () => { location.href = API + "/trend/export?hours=" + trendHours; };
 $("refreshAlerts").onclick = loadAlerts;
 
 // ---- 当前生效策略明细 ----
@@ -860,7 +1178,11 @@ async function loadPolicy() {
       ["报警输出", j.alarm_output_device || "系统默认输出设备"],
       ["报警静音", j.quiet_active ? `生效中 · 剩余 ${fmtDur(j.quiet_remaining_sec)}` : "未启用"],
       ["采集设备", `${d.name || "未知"}（索引 ${d.index ?? "-"}）`],
-      ["校准状态", j.calibrated ? `已校准 ${j.calib_offset_db} dB` : "未校准（估算）"],
+      ["校准状态", j.calibrated
+        ? `已校准 ${j.calib_offset_db} dB（${j.calib_device || "当前设备"} 专属）`
+        : (j.calib_source === "global"
+          ? `未校准（沿用旧全局值 ${j.calib_offset_db} dB，建议重校）`
+          : "未校准（估算）")],
       ["日志条数", `采样 ${j.counts.samples} 条 / 超量告警 ${j.counts.alerts} 条`],
     ];
     let html = "<table>"
@@ -1005,9 +1327,17 @@ async function loadRecordings() {
     $("r_maxmb").value = j.max_mb;
     $("r_days").value = j.keep_days;
     $("r_cut").checked = !!j.cut_on_alarm;
+    $("r_gain_mode").value = j.gain_mode || "off";
+    const gdb = Number(j.gain_db ?? 0);
+    $("r_gain_db").value = Math.max(-20, Math.min(40, gdb));
+    $("r_gain_db_num").value = gdb;
+    syncGainUI();
     let info = j.enabled
       ? (j.ready ? `缓冲 ${j.buffer_sec}s · ${j.samplerate}Hz · ${j.channels}ch` : "缓冲准备中…")
       : "录音已关闭";
+    info += " · " + (j.gain_mode === "auto" ? "增益：自动最大化"
+             : j.gain_mode === "fixed" ? `增益：${Number(j.gain_db ?? 0)} dB`
+             : "增益：原始音量");
     if (j.recording) info += " · 🔴 正在录音";
     if (j.cut_on_alarm) info += " · ✂ 报警触发即截断";
     info += `　共 ${j.count} 个文件 / ${j.total_mb} MB`;
@@ -1023,6 +1353,25 @@ async function loadRecordings() {
 }
 $("rRefresh").onclick = loadRecordings;
 
+// ---- 录音增益：滑杆/数字联动 + 模式切换时禁用 ----
+function syncGainUI() {
+  const mode = $("r_gain_mode").value;
+  const fixed = mode === "fixed";
+  $("r_gain_db").disabled = !fixed;
+  $("r_gain_db_num").disabled = !fixed;
+  const db = Number($("r_gain_db_num").value || 0);
+  if (mode === "off") $("r_gain_txt").textContent = "×1.00（原样）";
+  else if (mode === "auto") $("r_gain_txt").textContent = "自动顶到满刻度";
+  else $("r_gain_txt").textContent = "×" + Math.pow(10, db / 20).toFixed(2);
+}
+$("r_gain_mode").onchange = syncGainUI;
+$("r_gain_db").oninput = () => { $("r_gain_db_num").value = $("r_gain_db").value; syncGainUI(); };
+$("r_gain_db_num").oninput = () => {
+  const v = Number($("r_gain_db_num").value || 0);
+  $("r_gain_db").value = Math.max(-20, Math.min(40, v));
+  syncGainUI();
+};
+
 $("rSave").onclick = async () => {
   const body = {
     rec_enabled: $("r_enabled").checked,
@@ -1033,8 +1382,14 @@ $("rSave").onclick = async () => {
     rec_max_mb: parseFloat($("r_maxmb").value) || 0,
     rec_keep_days: parseInt($("r_days").value, 10) || 0,
     rec_cut_on_alarm: $("r_cut").checked,
+    rec_gain_mode: $("r_gain_mode").value,
+    rec_gain_db: parseFloat($("r_gain_db_num").value) || 0,
   };
   if (body.rec_pre_sec < 1 || body.rec_post_sec < 1) { alert("前后时长至少 1 秒"); return; }
+  if (body.rec_gain_mode === "fixed" &&
+      (body.rec_gain_db < -60 || body.rec_gain_db > 60)) {
+    alert("固定增益需在 -60 ~ +60 dB 之间"); return;
+  }
   try {
     const j = await (await fetch(API + "/config", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1054,44 +1409,6 @@ $("rPrune").onclick = async () => {
     $("rInfo").textContent = j.ok ? `已清空 ${j.removed} 个录音文件，剩余 ${j.count} 个 / ${j.total_mb} MB` : ("清空失败: " + (j.error || ""));
     loadRecordings();
   } catch (e) { $("rInfo").textContent = "清空失败: " + e; }
-};
-
-// ---- 本地存储配额（日志 + 录音）----
-async function loadStorageQuota() {
-  try {
-    const j = await (await fetch(API + "/storage/quota")).json();
-    $("quota_cap").value = j.cap_mb;
-    const pct = j.unlimited ? "不限" : (j.cap_mb > 0 ? (100 * j.total_mb / j.cap_mb).toFixed(1) + "%" : "-");
-    let s = `合计占用 <b>${j.total_mb} MB</b> / 上限 <b>${j.unlimited ? "不限" : j.cap_mb + " MB"}</b>（${pct}）`;
-    s += `　·　日志 ${j.log_mb} MB　·　录音 ${j.rec_mb} MB　·　共 ${j.count} 个文件（录音 ${j.rec_count} 个）`;
-    if (j.over) s += `　⚠ <span style="color:var(--red);">已超限，下次检查将删除最旧文件</span>`;
-    $("quotaInfo").innerHTML = s;
-  } catch (e) { $("quotaInfo").textContent = "读取失败: " + e; }
-}
-$("quotaRefresh").onclick = loadStorageQuota;
-
-$("quotaSave").onclick = async () => {
-  const cap = parseInt($("quota_cap").value, 10);
-  if (isNaN(cap) || cap < 0) { alert("上限请填 0（不限制）或正整数 MB"); return; }
-  try {
-    const j = await (await fetch(API + "/config", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ storage_max_mb: cap }),
-    })).json();
-    if (!j.ok) { alert("保存失败：" + (j.error || "")); return; }
-    alert("已保存：日志+录音合计上限 " + cap + " MB（0 = 不限制）");
-    loadStorageQuota();
-  } catch (e) { alert("保存失败: " + e); }
-};
-
-$("quotaEnforce").onclick = async () => {
-  if (!confirm("立即按当前上限清理：从最旧的文件开始删除，直到低于上限？\n（今天正在写的日志不会被删；此操作不可恢复）")) return;
-  try {
-    const j = await (await fetch(API + "/storage/quota/enforce", { method: "POST" })).json();
-    if (!j.ok) { alert("清理失败：" + (j.error || "")); return; }
-    alert(`已删除 ${j.removed} 个最旧文件，剩余合计 ${j.total_mb} MB / ${j.count} 个文件`);
-    loadStorageQuota();
-  } catch (e) { alert("清理失败: " + e); }
 };
 
 // ---- 每日报警邮件 ----
@@ -1337,15 +1654,14 @@ $("stopSvc").onclick = async () => {
   }
 };
 
-bindAlarmAutosave();
+bindAlarmSave();
 
 connect(); loadVersion(); loadConfig(); loadSchedule(); loadPolicy(); loadTrend();
-loadAlerts(); loadLogFiles(); loadMail(); loadRecordings(); loadStorageQuota();
+loadAlerts(); loadLogFiles(); loadMail(); loadRecordings();
 setInterval(loadPolicy, 20000);   // 策略可能随时间段切换而变化，定期刷新明细
 setInterval(loadTrend, 30000); setInterval(loadAlerts, 15000);
 setInterval(loadLogFiles, 60000); // 日志文件清单（跨日切割后能看到新归档）
 setInterval(loadRecordings, 30000);
-setInterval(loadStorageQuota, 60000); // 存储配额占用（每分钟刷新）
 </script>
 </body>
 </html>

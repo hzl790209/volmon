@@ -9,15 +9,12 @@
 """
 import csv
 import datetime
-import logging
 import os
 import sqlite3
 import threading
 import time
 
 from volmon import logrot
-
-logger = logging.getLogger("volmon.storage")
 
 
 def _fmt(ms):
@@ -43,35 +40,10 @@ class Storage:
         self.csv_keep_days = csv_keep_days              # 归档 CSV 保留天数（0 = 不删）
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self.lock = threading.Lock()
-        self.conn = self._open_db(path)
+        self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._init()
         self.rotate_alerts_csv_if_stale()  # 启动时把"昨天遗留的 CSV"归档
-
-    def _open_db(self, path):
-        """打开 SQLite 库；若文件已损坏则自动备份并创建新库，避免启动崩溃。"""
-        try:
-            conn = sqlite3.connect(path, check_same_thread=False)
-            # 做一次轻量查询来验证库文件是否完好（connect 成功不代表文件合法）
-            conn.execute("SELECT name FROM sqlite_master LIMIT 1")
-            return conn
-        except sqlite3.DatabaseError as e:
-            if not os.path.exists(path):
-                raise
-            backup = f"{path}.corrupt.{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
-            try:
-                os.rename(path, backup)
-            except OSError as ren_e:
-                raise sqlite3.DatabaseError(
-                    f"volmon.db 已损坏且无法备份: {ren_e}"
-                ) from e
-            logger.warning(
-                "volmon.db 已损坏（%s），已备份到 %s，将创建新库继续运行",
-                e, backup
-            )
-            # 保险起见也打印到 stdout，方便打包版用户在终端/Console 看到
-            print(f"[storage] volmon.db 已损坏，已备份到 {backup}，将创建新库继续运行")
-            return sqlite3.connect(path, check_same_thread=False)
 
     def set_csv_retention(self, rotate_daily=None, keep_days=None):
         """运行时调整告警 CSV 的切割/保留策略（网页改配置后立即生效）。"""

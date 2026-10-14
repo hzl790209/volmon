@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <?define ProductName = "Volmon 音量监控" ?>
+  <?define Manufacturer = "Volmon" ?>
+  <?define Version = "1.0.11" ?>
+  <?define ExeName = "volmon-win.exe" ?>
+
+  <Product Id="{4089B4AB-85F2-4DFE-B830-79D1E114062B}"
+           Name="$(var.ProductName)"
+           Language="2052"
+           Codepage="936"
+           Version="$(var.Version)"
+           Manufacturer="$(var.Manufacturer)"
+           UpgradeCode="{c9b78eab-59f5-4376-94e3-db18a036eaf2}">
+
+    <!-- 64 位包：所有组件必须 Win64=yes（harvest 已批量补上） -->
+    <Package Id="*"
+             InstallerVersion="500"
+             Compressed="yes"
+             Platform="x64"
+             InstallScope="perMachine"
+             Description="$(var.ProductName) 安装包"
+             Comments="音量/噪音监控与崩溃自愈" />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- 升级：同一 UpgradeCode 的新版本覆盖旧版本 -->
+    <MajorUpgrade DowngradeErrorMessage="已安装更高版本，请先卸载。"
+                  Schedule="afterInstallExecute" />
+
+    <!-- ===== 目录结构 ===== -->
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="ManufacturerFolder" Name="$(var.Manufacturer)">
+          <Directory Id="INSTALLFOLDER" Name="volmon-win">
+            <!-- 由 appfiles.wxs 的 harvest 填充（DirectoryRef INSTALLFOLDER） -->
+          </Directory>
+        </Directory>
+      </Directory>
+
+      <!-- 开始菜单快捷方式 -->
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="$(var.Manufacturer)">
+          <Component Id="StartMenuShortcut" Guid="{7E2C4F1B-9A3D-4B7E-8C1F-2D5A6B9C0E11}" Win64="yes">
+            <Shortcut Id="VolmonStartMenuShortcut"
+                      Name="$(var.ProductName)"
+                      Description="启动并打开音量监控面板"
+                      Target="[INSTALLFOLDER]$(var.ExeName)"
+                      Arguments="web"
+                      WorkingDirectory="INSTALLFOLDER"
+                      Advertise="no"
+                      Icon="VolmonExeIcon" />
+            <RemoveFolder Id="RemoveApplicationProgramsFolder"
+                          Directory="ApplicationProgramsFolder"
+                          On="uninstall" />
+            <RegistryValue Root="HKCU"
+                           Key="Software\$(var.Manufacturer)"
+                           Name="installed"
+                           Type="integer"
+                           Value="1"
+                           KeyPath="yes" />
+          </Component>
+
+          <!-- 「命令行监控」入口：直接指向随包安装的 volmon-cli.exe（控制台子系统，
+               双击即开终端窗口并进入实时波形；Ctrl+C 退出）。
+               注意：不要用 [SystemFolder]cmd.exe 之类的「外部路径」当 Target——
+               MSI 会当成通告式快捷方式导致 Target 落空。用 [#FileId] 引用包内文件才对。 -->
+          <Component Id="CmdMonitorShortcut" Guid="{45CCD4D2-3408-46AC-9805-A7DD250243FF}" Win64="yes">
+            <Shortcut Id="VolmonCmdShortcut"
+                      Name="Volmon 命令行监控"
+                      Description="在终端窗口实时监控音量波形（Ctrl+C 退出）"
+                      Target="[#filVolmonCli]"
+                      Arguments="cli"
+                      WorkingDirectory="INSTALLFOLDER"
+                      Icon="VolmonExeIcon" />
+            <RegistryValue Root="HKCU"
+                           Key="Software\$(var.Manufacturer)"
+                           Name="cmdmon"
+                           Type="integer"
+                           Value="1"
+                           KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <!-- 可执行文件图标（从安装目录内的 exe 提取，无需额外文件） -->
+    <Icon Id="VolmonExeIcon" SourceFile="dist10/volmon-win/$(var.ExeName)" />
+
+    <!-- ===== 功能 ===== -->
+    <Feature Id="MainFeature"
+             Title="$(var.ProductName)"
+             Level="1"
+             Description="音量监控主程序（含 Python 运行时，无需额外部署）。"
+             Display="expand"
+             ConfigurableDirectory="INSTALLFOLDER">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="CmdMonitorShortcut" />
+    </Feature>
+
+    <!-- ===== 安装/卸载时注册与清理「崩溃自愈」计划任务 ===== -->
+    <!-- Type 34 自定义操作：直接运行安装好的 exe（FileKey 解析真实路径），
+         参数作为 ExeCommand 传入；无需在属性里拼 [INSTALLFOLDER]。 -->
+    <!-- 安装：以 SYSTEM 注册 VolmonMonitor 计划任务（登录自启 + 崩溃自愈） -->
+    <CustomAction Id="CA_InstallTask"
+                  FileKey="filVolmonExe"
+                  ExeCommand="install"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <!-- 卸载 / 回滚：删除该计划任务 -->
+    <CustomAction Id="CA_UninstallTask"
+                  FileKey="filVolmonExe"
+                  ExeCommand="uninstall"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+    <CustomAction Id="CA_UninstallTask_Rollback"
+                  FileKey="filVolmonExe"
+                  ExeCommand="uninstall"
+                  Execute="rollback"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <!-- 安装完成后启动面板（结束页勾选框控制；用 web 而非 app，避免端口冲突） -->
+    <CustomAction Id="CA_LaunchApp"
+                  FileKey="filVolmonExe"
+                  ExeCommand="web"
+                  Execute="immediate"
+                  Impersonate="yes"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <!-- 注册计划任务（先于 Launch，确保自愈已就绪） -->
+      <Custom Action="CA_InstallTask" After="InstallFiles">
+        <![CDATA[NOT Installed]]>
+      </Custom>
+      <!-- 回滚：若安装失败，删除已注册的任务 -->
+      <Custom Action="CA_UninstallTask_Rollback" Before="CA_InstallTask">
+        <![CDATA[NOT Installed]]>
+      </Custom>
+      <!-- 卸载时清理任务 -->
+      <Custom Action="CA_UninstallTask" After="RemoveFiles">
+        <![CDATA[REMOVE ~= "ALL"]]>
+      </Custom>
+      <!-- 结束页勾选后启动 -->
+      <Custom Action="CA_LaunchApp" After="InstallFinalize">
+        <![CDATA[NOT Installed AND WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1]]>
+      </Custom>
+    </InstallExecuteSequence>
+
+    <!-- ===== UI ===== -->
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT"
+              Value="安装完成后启动 Volmon 音量监控" />
+    <UI>
+      <UIRef Id="WixUI_InstallDir" />
+    </UI>
+
+    <!-- ARP（添加/删除程序）元数据 -->
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/volmon/volmon" />
+  </Product>
+</Wix>

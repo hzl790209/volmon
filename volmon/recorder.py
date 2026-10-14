@@ -58,9 +58,25 @@ import wave
 
 import numpy as np
 
+from volmon import paths as paths_mod
+
 logger = logging.getLogger("volmon.recorder")
 
 MAX_CONCURRENT = 3      # 同时进行的录音任务上限（防止并发报警把内存吃光）
+
+# ---- 写盘增益：三种模式，默认 off（原始录音）----
+# 增益是一把双刃剑：麦克风增益偏小、声源离得远时，原始录音峰值可能只有 -30 ~ -50 dBFS，
+# 回放极小声；但把整段音频顶到满刻度，底噪与房间混响会被**同比例放大**，
+# 结果往往是"更响了，却更听不清内容"（安静环境下的录音尤其明显）。
+# 因此默认 **off（原样保存）**，把选择权交给用户在页面上按需调整。
+GAIN_MODES = ("off", "fixed", "auto")   # off=原始 / fixed=固定 dB / auto=自动归一化
+GAIN_DB_MIN, GAIN_DB_MAX = -60.0, 60.0  # fixed 模式允许范围（超出会削波失真）
+TARGET_PEAK = 0.99     # auto 模式目标峰值（约 -0.09 dBFS）：留余量避免 int16 量化时溢出削波
+SILENCE_PEAK = 1e-5    # auto 模式静音判定：峰值低于此（约 -100 dBFS，已接近数字静音）才认为
+                       # "没有声音"并不做增益；否则会把量化噪声放大成一片刺耳白噪。
+MAX_GAIN_DB = 100.0    # auto 模式增益上限。与 SILENCE_PEAK 自洽：只要
+                       # MAX_GAIN ≥ TARGET_PEAK / SILENCE_PEAK，任何**非静音**录音都能被
+                       # 精确顶到目标峰值。（100 dB = 10 万倍 ≥ 0.99 / 1e-5 = 9.9 万倍）
 
 
 class RingBuffer:
@@ -171,7 +187,14 @@ class Recorder:
         return bool(self.cfg.get("rec_enabled"))
 
     def base_dir(self):
-        return self.cfg.get("rec_dir") or os.path.join("data", "recordings")
+        """录音根目录：用户在网页「存储路径」里填的绝对路径或相对路径。
+
+        经 paths.resolve_user_path 归一化——相对路径以数据根目录为基准，
+        因此无论服务从哪个工作目录被拉起（计划任务 / 桌面版双击），都落到同一处。
+        每次写盘都重新读取 config，故改完路径**立即生效**，无需重启。
+        """
+        return (paths_mod.resolve_user_path(self.cfg.get("rec_dir"))
+                or paths_mod.resolve_user_path(os.path.join("data", "recordings")))
 
     # ---------- 数据流 ----------
     def feed(self, data):
@@ -222,7 +245,9 @@ class Recorder:
         now = time.time()
         dt = datetime.datetime.fromtimestamp(now)
         day = dt.strftime("%Y-%m-%d")
-        name = f"rec_{dt.strftime('%H%M%S')}_{int((now % 1) * 1000):03d}.wav"
+        # 文件名自带年月日（目录也按日分）：单独拷出来、或在播放器里看列表时，
+        # 不依赖所在目录也能一眼认出是哪天录的。
+        name = f"rec_{dt.strftime('%Y%m%d')}_{dt.strftime('%H%M%S')}_{int((now % 1) * 1000):03d}.wav"
         rel = f"{day}/{name}"
 
         task = {
@@ -316,6 +341,60 @@ class Recorder:
             self.prune()
         return out
 
+    @staticmethod
+    def _apply_gain(data, mode="off", gain_db=0.0):
+        """按模式施加写盘增益。返回 (处理后的数据, 实际增益倍数)。
+
+        三种模式（由网页「录音增益」选择，默认 off）：
+          - ``off``   ：原样返回，gain=1.0。**默认**，听感最真实，底噪不会被放大。
+          - ``fixed`` ：按 gain_db 固定放大/衰减（gain = 10^(dB/20)），可正可负。
+                        超出 ±1.0 的部分会被削波（clip），增益过大将失真——
+                        页面把范围限制在 ±60 dB，并由本函数兜底夹紧。
+          - ``auto``  ：峰值归一化，把最响的一刻顶到 TARGET_PEAK（回放最响）。
+                        两处保护：峰值低于 SILENCE_PEAK 视为静音不放大（否则纯底噪会被
+                        放大成刺耳白噪）；增益不超过 MAX_GAIN_DB。
+        """
+        if data.size == 0:
+            return data, 1.0
+        mode = (str(mode or "off")).strip().lower()
+        if mode not in GAIN_MODES:
+            mode = "off"
+
+        if mode == "off":
+            return data, 1.0
+
+        if mode == "fixed":
+            try:
+                db = float(gain_db or 0.0)
+            except (TypeError, ValueError):
+                db = 0.0
+            db = max(GAIN_DB_MIN, min(GAIN_DB_MAX, db))
+            gain = 10.0 ** (db / 20.0)
+            if abs(gain - 1.0) < 1e-9:
+                return data, 1.0
+            return np.clip(data * gain, -1.0, 1.0), gain
+
+        # ---- auto：峰值归一化 ----
+        peak = float(np.max(np.abs(data)))
+        if peak <= SILENCE_PEAK:
+            return data, 1.0
+        gain = TARGET_PEAK / peak
+        max_gain = 10.0 ** (MAX_GAIN_DB / 20.0)
+        if gain > max_gain:
+            gain = max_gain
+        return np.clip(data * gain, -1.0, 1.0), gain
+
+    def _gain_settings(self):
+        """读取当前生效的增益配置 (mode, db)。每次写盘都重读，网页改完**立即生效**。"""
+        mode = (str(self.cfg.get("rec_gain_mode") or "off")).strip().lower()
+        if mode not in GAIN_MODES:
+            mode = "off"
+        try:
+            db = float(self.cfg.get("rec_gain_db") or 0.0)
+        except (TypeError, ValueError):
+            db = 0.0
+        return mode, db
+
     def _write_wav(self, p):
         try:
             day_dir = os.path.join(self.base_dir(), p["day"])
@@ -328,8 +407,14 @@ class Recorder:
             data = np.concatenate(parts, axis=0)
             if data.size == 0:
                 return None
+            # 写盘增益：默认 off（原样保存）；模式由网页「录音增益」决定（详见 _apply_gain）
+            mode, cfg_db = self._gain_settings()
+            data, gain = self._apply_gain(data, mode, cfg_db)
+            gain_db = 20.0 * float(np.log10(gain)) if gain > 0 else 0.0
             # float32 [-1,1] -> int16 PCM
             pcm = np.clip(data, -1.0, 1.0)
+            # 削波比例：放大后被顶到满刻度的样本占比。过高说明增益开太大、声音已失真。
+            clipped = float(np.mean(np.abs(pcm) >= 0.999)) if pcm.size else 0.0
             ints = (pcm * 32767.0).astype("<i2")
             with wave.open(path, "wb") as w:
                 w.setnchannels(self.channels)
@@ -337,11 +422,17 @@ class Recorder:
                 w.setframerate(self.samplerate)
                 w.writeframes(ints.tobytes())
             secs = data.shape[0] / float(self.samplerate)
-            if p.get("cut"):
-                logger.info("录音已保存（报警触发·已截断）：%s（%.1f 秒，仅含触发前音频）",
-                            p["rel"], secs)
+            if mode == "off":
+                gtxt = "原始音量"
             else:
-                logger.info("录音已保存：%s（%.1f 秒）", p["rel"], secs)
+                gtxt = f"增益 {gain_db:+.1f} dB（{mode}）"
+                if clipped > 0.001:
+                    gtxt += f" ⚠削波 {clipped * 100:.1f}%"
+            if p.get("cut"):
+                logger.info("录音已保存（报警触发·已截断）：%s（%.1f 秒，仅含触发前音频，%s）",
+                            p["rel"], secs, gtxt)
+            else:
+                logger.info("录音已保存：%s（%.1f 秒，%s）", p["rel"], secs, gtxt)
             self.last_error = ""
             return path
         except Exception as e:
@@ -486,5 +577,7 @@ class Recorder:
             "last_file": self.last_file,
             "last_error": self.last_error,
             "cut_on_alarm": self.cut_on_alarm(),       # 报警触发即截断（仅留触发前音频）
+            "gain_mode": self._gain_settings()[0],     # 写盘增益模式：off / fixed / auto
+            "gain_db": self._gain_settings()[1],       # fixed 模式下的增益 dB
             "recent": recent,
         }

@@ -45,6 +45,8 @@ def setup_logging(log_path, rotate_daily=True, keep_days_getter=None):
     """
     from volmon import logrot
 
+    # 支持网页自定义的路径（绝对或相对），统一解析成绝对路径
+    log_path = _paths.resolve_user_path(log_path) or log_path
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     if rotate_daily:
         file_handler = logrot.DailyRotatingFileHandler(
@@ -70,8 +72,8 @@ def build_core(cfg, engine=None):
 
         engine = audio.AudioEngine(device=cfg.get("device"))
     store = storage.Storage(
-        cfg.get("db_path"),
-        alerts_csv=cfg.get("alerts_csv_path"),
+        _paths.resolve_user_path(cfg.get("db_path")) or cfg.get("db_path"),
+        alerts_csv=_paths.resolve_user_path(cfg.get("alerts_csv_path")) or cfg.get("alerts_csv_path"),
         csv_rotate_daily=bool(cfg.get("log_rotate_daily")),
         csv_keep_days=int(cfg.get("log_keep_days") or 0),
     )
@@ -268,14 +270,73 @@ def cmd_cli(args, cfg):
 
     host = getattr(args, "host", None) or "127.0.0.1"
     port = getattr(args, "port", None) or cfg.get("port")
-    asyncio.run(cli_mod.run_cli(host=host, port=port))
+    asyncio.run(cli_mod.run_cli(
+        host=host,
+        port=port,
+        trend_hours=float(getattr(args, "trend_hours", 1.0) or 1.0),
+        show_trend=not bool(getattr(args, "no_trend", False)),
+        fps=int(getattr(args, "fps", 6) or 6),
+        alt_screen=not bool(getattr(args, "no_screen", False)),
+    ))
+
+
+def _open_store(cfg):
+    """只打开 SQLite 存储（不创建音频引擎），供只读命令（trend）使用。"""
+    return storage.Storage(
+        _paths.resolve_user_path(cfg.get("db_path")) or cfg.get("db_path"),
+        alerts_csv=_paths.resolve_user_path(cfg.get("alerts_csv_path")) or cfg.get("alerts_csv_path"),
+        csv_rotate_daily=bool(cfg.get("log_rotate_daily")),
+        csv_keep_days=int(cfg.get("log_keep_days") or 0),
+    )
+
+
+def cmd_trend(args, cfg):
+    """历史趋势：终端直读本地数据库渲染（无需服务运行）。"""
+    import shutil as _shutil
+    import time as _time
+
+    from rich.console import Console
+
+    from volmon import cli as cli_mod
+
+    store = _open_store(cfg)
+    hours = float(getattr(args, "hours", 24) or 24)
+    since = int((_time.time() - hours * 3600) * 1000)
+    hist = [(r["t"], r["db"]) for r in store.get_samples(since)]
+    alerts = store.get_alerts(since)
+    thr = float(cfg.get("threshold_db") or 0)
+
+    size = _shutil.get_terminal_size(fallback=(100, 30))
+    console = Console()
+    # 统一用 console 的宽度构建图表：重定向/管道下 shutil 与 rich 的宽度判定不一致，
+    # 图表按更宽的值画出来、再被 console 折行，会多出好几行打乱版式。
+    # 同时 soft_wrap=True 关掉折行（超宽行裁切），保证输出行数与作者行数一致。
+    width = min(size.columns, console.width)
+    console.print(cli_mod.render_trend(
+        hist, len(alerts), thr, hours,
+        width=width,
+        height=max(8, size.lines - 16),
+    ), soft_wrap=True)
+
+    if alerts:
+        console.print(f"\n最近预警（共 {len(alerts)} 次，最多列 5 条）：")
+        for a in alerts[:5]:
+            ts = _time.strftime("%m-%d %H:%M:%S", _time.localtime(a["start_ts"] / 1000))
+            console.print(
+                f"  {ts}  峰值 {a['peak_db']:.1f} dB  "
+                f"持续 {a['duration_s']}s  阈值 {a['threshold_db']:.1f}"
+            )
 
 
 def cmd_calibrate(args, cfg):
     from volmon import calibrate as calibrate_mod  # 延迟导入（需要 aiohttp）
 
     port = args.port or cfg.get("port")
-    calibrate_mod.run_calibrate(args.real_db, args.host, port)
+    calibrate_mod.run_calibrate(
+        args.real_db, args.host, port,
+        window=getattr(args, "window", 5.0) or 5.0,
+        global_scope=getattr(args, "global_scope", False),
+    )
 
 
 def cmd_config(args, cfg):
@@ -632,14 +693,26 @@ def main():
     p_app.add_argument("--port", type=int, default=None)
     p_app.add_argument("--fake", action="store_true", help="无麦克风时用模拟引擎演示/测试")
 
-    p_cli = sub.add_parser("cli", help="终端实时波形客户端")
+    p_cli = sub.add_parser("cli", help="终端实时波形客户端（下方附历史趋势图）")
     p_cli.add_argument("--host", default=None)
     p_cli.add_argument("--port", type=int, default=None)
+    p_cli.add_argument("--trend-hours", type=float, default=1.0,
+                       help="历史趋势区间（小时，默认 1）")
+    p_cli.add_argument("--no-trend", action="store_true",
+                       help="实时界面不显示历史趋势（只显示实时波形）")
+    p_cli.add_argument("--fps", type=int, default=6,
+                       help="刷新上限（次/秒，默认 6）。越小越省电；Windows Terminal "
+                            "可调到 10~15 让波形更顺滑（传统控制台无需调高，已无频闪）")
+    p_cli.add_argument("--no-screen", action="store_true",
+                       help="改用 rich Live 兼容渲染（默认的行级 diff 渲染若异常可试）")
 
-    p_cal = sub.add_parser("calibrate", help="用专业设备实测值校准")
+    p_cal = sub.add_parser("calibrate", help="用专业设备实测值校准（按当前设备分别保存）")
     p_cal.add_argument("real_db", type=float, help="专业设备测得的真实 dB")
     p_cal.add_argument("--host", default="127.0.0.1")
     p_cal.add_argument("--port", type=int, default=None)
+    p_cal.add_argument("--window", type=float, default=5.0, help="取样窗口秒数（默认 5）")
+    p_cal.add_argument("--global", dest="global_scope", action="store_true",
+                       help="写入旧的全局 calib_offset_db（不推荐：换设备会串味）")
 
     p_cfg = sub.add_parser("config", help="查看/设置配置")
     p_cfg.add_argument("action", choices=["get", "set"])
@@ -690,6 +763,9 @@ def main():
     p_logs.add_argument("--rotate", action="store_true", help="立刻做一次按日切割与过期清理")
     p_logs.add_argument("--force", action="store_true", help="配合 --rotate：未跨日也强制归档")
 
+    p_trend = sub.add_parser("trend", help="终端显示历史趋势图（直读本地数据库，无需服务运行）")
+    p_trend.add_argument("--hours", type=float, default=24, help="统计区间（小时，默认 24）")
+
     args = parser.parse_args()
 
     cfg = config_mod.Config()
@@ -727,6 +803,8 @@ def main():
         cmd_clear(args, cfg)
     elif args.cmd == "logs":
         cmd_logs(args, cfg)
+    elif args.cmd == "trend":
+        cmd_trend(args, cfg)
     elif args.cmd == "mail":
         cmd_mail(args, cfg)
     elif args.cmd == "rec":

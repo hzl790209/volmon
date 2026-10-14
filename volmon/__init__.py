@@ -9,7 +9,7 @@ import sys
 
 # 产品名随平台变化：macOS=volmon-mac，Windows=volmon-win（页面/接口展示用）
 __product__ = "volmon-win" if sys.platform == "win32" else "volmon-mac"
-__version__ = "1.0.3"
+__version__ = "1.0.11"
 
 # 对外展示用的完整版本串（如页面徽章 "volmon-mac 1.0"）
 __display__ = f"{__product__} {__version__}"

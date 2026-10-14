@@ -14,6 +14,8 @@ import logging
 import threading
 import time
 
+from .audio import resolve_device_id, list_matching_indices, _hostapi_name_of
+
 logger = logging.getLogger("volmon.alarm")
 
 
@@ -165,31 +167,84 @@ def make_sounddevice_player(freq=880.0, beep_on=0.3, beep_off=0.2, device_getter
     device_getter: 可选 callable() -> 输出设备名或 None。在**每次播放时**调用，
       因此网页上改了输出设备后立即生效，无需重启服务。返回空串/None 表示用系统默认输出。
     无任何音频输出设备/权限时（如沙箱）会记录警告而不崩溃。
+
+    设备歧义与采样率兼容（关键修复）：
+      Windows 下同一物理设备会被 MME/DirectSound/WASAPI/WDM-KS 各列一份、基础名相同。
+      resolve_device_id 优先选 WASAPI 变体，但部分设备的 WASAPI/WDM-KS 端点**不支持
+      44100Hz**（报错 "Invalid sample rate"）；而本函数默认按 44100 生成报警音——直接播放
+      会失败，进而回退到系统默认（电脑扬声器），表现为"选了 USB 耳机却从电脑出声"。
+      故此处：
+        1) 候选顺序 = 解析首选索引 -> 同设备的全部 host API 变体（优先最兼容的
+           MME/DirectSound）-> 系统默认；尽量尊重用户在面板里选的设备，不轻易退回电脑扬声器。
+        2) 每个候选先以**设备默认采样率**尝试，再以 44100 回退——WASAPI 用其 48000 即可成功。
     """
     import numpy as np
     import sounddevice as sd
 
-    def player(duration_sec):
-        sr = 44100
-        total = max(0.1, float(duration_sec))
+    def _build_wave(sr, total):
+        total = max(0.1, float(total))
         n = int(total * sr)
         t = np.arange(n) / sr
         period = beep_on + beep_off
         env = ((t % period) < beep_on).astype(float)  # 周期性开关，形成嘀嘀声
-        wave = 0.25 * np.sin(2 * np.pi * freq * t) * env
+        return 0.25 * np.sin(2 * np.pi * freq * t) * env
 
-        dev = None
+    # host API 兼容性排序：MME/DirectSound 对 44100/48000 均兼容，最稳；其余其后
+    _HA_ORDER = {"MME": 0, "Windows DirectSound": 1, "Windows WASAPI": 2, "Windows WDM-KS": 3}
+
+    def player(duration_sec):
+        # 用户选择的输出设备名（空串/None = 系统默认）
+        requested = None
         if device_getter:
             try:
-                dev = device_getter() or None
+                requested = device_getter() or None
             except Exception as e:
                 logger.debug("读取报警输出设备失败: %s", e)
-                dev = None
+                requested = None
 
-        try:
-            sd.play(wave, samplerate=sr, blocking=True, device=dev)
-            logger.info("报警声已播放（输出设备=%s）", dev or "系统默认")
-        except Exception as e:
-            logger.warning("报警声播放失败（输出设备 %s 不可用？）: %s", dev or "系统默认", e)
+        # 构造候选设备列表（索引）：首选 + 同设备的其它 host API 变体，按兼容性排序
+        cands = []
+        if requested:
+            try:
+                idx = resolve_device_id(requested, kind="output")
+            except Exception:
+                idx = None
+            if idx is not None:
+                sibs = []
+                try:
+                    sibs = list_matching_indices(requested, kind="output")
+                except Exception:
+                    pass
+                ranked = sorted(set([idx] + sibs),
+                                key=lambda i: _HA_ORDER.get(_hostapi_name_of(i), 9))
+                cands.extend(ranked)
+
+        # 系统默认放最后兜底（仍为电脑扬声器，但只在确实所有指定变体都失败时才用）
+        cands.append(None)
+
+        last_err = None
+        for c in cands:
+            # 每个候选先试设备默认采样率，再回退 44100；
+            # 部分设备（HECATE/WASAPI）默认 48000，必须用其默认率才能成功。
+            srs = []
+            if c is not None:
+                try:
+                    srs.append(int(round(sd.query_devices(c).get("default_samplerate", 44100))))
+                except Exception:
+                    pass
+            if 44100 not in srs:
+                srs.append(44100)
+            for sr in srs:
+                try:
+                    sd.play(_build_wave(sr, duration_sec), samplerate=sr,
+                            blocking=True, device=c)
+                    logger.info("报警声已播放（输出设备=%s, sr=%d）",
+                                c if c is not None else "系统默认", sr)
+                    return
+                except Exception as e:
+                    last_err = e
+                    logger.warning("报警声在输出设备 #%s (sr=%d) 播放失败，尝试下一个候选: %s",
+                                  c, sr, e)
+        logger.warning("报警声播放失败（所有候选设备均不可用）: %s", last_err)
 
     return player

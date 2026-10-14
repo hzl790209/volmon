@@ -41,6 +41,11 @@ class FakeEngine:
     def raw_db(self):
         return self._raw
 
+    def rms_db_over(self, seconds=5.0):
+        """能量域 RMS 取样（真实引擎<｜hy_place▁holder▁no▁813｜>加窗口聚合，这里返回固定值即可）。"""
+        self.last_window = seconds
+        return self._raw
+
     def recent_raw_avg(self, n=100):
         return self._raw
 
@@ -50,14 +55,27 @@ class FakeEngine:
     def list_output_devices(self):
         return [(1, "USB 耳机", 2), (3, "本机扬声器", 2)]
 
+    def device_list(self, kind="input", aliases=None):
+        """返回带 host API / 显示名 / 是否重名的设备字典（与生产引擎接口一致）。"""
+        if kind == "input":
+            names = ["默认设备", "USB 麦克风"]
+        else:
+            names = ["USB 耳机", "本机扬声器"]
+        return [{"index": i, "name": n, "channels": 1 if kind == "input" else 2,
+                 "hostapi": "MME", "display": n, "alias": "", "is_dup": False}
+                for i, n in enumerate(names)]
+
     def rescan(self):
         """模拟热插拔后重新枚举（不触碰真实 PortAudio）。"""
         self.rescanned = True
         return self.list_input_devices()
 
-    def active_device_info(self):
-        return {"configured": self.device, "index": 0,
-                "name": self.device or "default", "samplerate": 44100, "running": True}
+    def active_device_info(self, aliases=None):
+        name = self.device or "default"
+        base = name.split(",")[0].strip() if name else name
+        display = (aliases or {}).get(base) or (aliases or {}).get(name) or name
+        return {"configured": self.device, "index": 0, "name": name,
+                "display": display, "samplerate": 44100, "running": True}
 
     def switch_device(self, device="default"):
         """记录热切换，供断言"改配置后采集流确实切过去了"。"""
@@ -104,7 +122,8 @@ def test_rest_endpoints_and_ws(monkeypatch):
             assert cfg.get("calib_offset_db") == 5.0
 
             r = await client.get("/api/devices")
-            devs = await r.json()
+            payload = await r.json()
+            devs = payload["devices"]          # 接口返回 {devices:[...], hidden_count, show_all}
             assert any(x["name"] == "USB 麦克风" for x in devs)
 
             r = await client.get("/api/raw_avg")
@@ -205,7 +224,7 @@ def test_output_devices_and_rescan(monkeypatch):
         client, loop_task, cfg, store, eng = await _make_server()
         try:
             r = await client.get("/api/output-devices")
-            outs = await r.json()
+            outs = (await r.json())["devices"]
             assert any(x["name"] == "USB 耳机" for x in outs), "应列出输出设备"
             assert all(x["channels"] > 0 for x in outs)
 

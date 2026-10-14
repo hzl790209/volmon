@@ -39,7 +39,9 @@ def test_resource_path_points_to_bundled_web_page():
 
 
 def test_app_support_dir_name():
-    assert paths.app_support_dir().endswith("volmon-mac")
+    # 产品名随平台变化：Windows=volmon-win，macOS=volmon-mac
+    expected = "volmon-win" if sys.platform == "win32" else "volmon-mac"
+    assert paths.app_support_dir().endswith(expected)
     assert paths.app_support_dir().startswith(os.path.expanduser("~"))
 
 

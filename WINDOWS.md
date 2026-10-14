@@ -85,8 +85,86 @@ build_win.bat
 
 要点：
 - 用 `onedir + COLLECT + EXE`（`console=False`），**不用 onefile**：避免每次启动解压上百 MB、启动慢。
-- `sounddevice` 的 `portaudio.dll` 已在 `volmon-win.spec` 里通过 `binaries` 自动带入；若你的 sounddevice 版本路径不同，脚本里的 `try/except` 会优雅跳过（但采集将不可用，需手动确认 DLL 存在）。
+- `sounddevice` 的全部 `portaudio` DLL 已在 `volmon-win.spec` 里通过 `binaries` 把 `portaudio-binaries/*.dll` 全部带入；若你的 sounddevice 版本路径不同，需确认 DLL 存在。
 - 若要做安装包（NSIS / Inno Setup），把 `dist\volmon-win\` 整个目录打进去即可，入口 `volmon-win.exe`。
+
+---
+
+## 4.1 打包成 MSI 安装包（`volmon-win-x64.msi`）
+
+目标：把 `dist\volmon-win\`（含 Python 运行时，无需用户装环境）封成 **双击即装、装完即用** 的 MSI，并自动注册「登录自启 + 崩溃自愈」计划任务。
+
+成品：`volmon-win-x64.msi`（v1.0.9 约 42.6 MB，64 位，含嵌入式 cab，单文件分发；因内含两个入口 exe —— 桌面版 `volmon-win.exe` + 控制台版 `volmon-cli.exe`）。
+
+### 安装包做了什么
+- 安装到 `C:\Program Files\Volmon\volmon-win\`（per-machine，需管理员权限）。
+- 开始菜单两个入口：
+  - **“Volmon 音量监控”** → `volmon-win.exe web`（复用或拉起服务并打开浏览器面板）；
+  - **“Volmon 命令行监控”** → `volmon-cli.exe cli`（控制台版，直接进入终端实时波形）。
+- 安装末尾（结束页勾选框默认勾选）立即启动面板。
+- 安装时以 SYSTEM 身份注册计划任务 `VolmonMonitor`（登录时触发 `volmon-win.exe start`：起服务 + 看门狗，崩溃后由看门狗经 COM 重启实现自愈）。
+- 卸载时自动删除该计划任务（含安装失败回滚）。
+
+### 终端实时界面（`cli`）的可调项
+终端界面每帧整屏重绘，在 Windows 传统控制台 (conhost) 上重绘越频繁越容易肉眼看到闪烁。
+默认已做优化（只在画面变化时重绘 + 不高于 6 次/秒 + 空闲时完全静止），仍觉闪可以：
+```bat
+volmon-cli.exe cli --fps 4        rem 整屏重绘上限降到 4 次/秒（更稳，代价是波形略顿）
+volmon-cli.exe cli --no-screen    rem 不用备用屏（个别老控制台更顺）
+volmon-cli.exe cli --no-trend     rem 只保留实时波形
+```
+> 排查这类"闪"的经验：`screen=True` 时 rich 会把每帧补齐到整屏尺寸，所以重绘量 = 终端面积 × 频率；
+> 换 Windows Terminal 跑会明显更顺。改完务必用「整屏重绘次数」而不是肉眼来回归验证
+> （见 `volmon/cli.py` 顶部注释与 `CHANGELOG.md` 1.0.9 的验证方法）。
+
+### 构建步骤（用 WiX Toolset v3，`buildtools\wix311\` 已内置）
+
+> **务必用项目自带的 venv 构建**：`venv\Scripts\python.exe -m PyInstaller ...`。
+> 托管环境的 PyInstaller 里没有 aiohttp/sounddevice/psutil，`collect_all()` 会**静默**返回空，
+> 打出来的包装到别的机器上才会报 `ModuleNotFoundError`。
+> 另外沙箱会拦 `rm -rf dist\volmon-win`，用 `--distpath distN --workpath buildN` 侧路构建即可。
+
+```bat
+rem 1) 先产出 onedir（若已是最新可跳过）
+venv\Scripts\python.exe -m PyInstaller volmon-win.spec --distpath dist10 --workpath build10 --noconfirm
+
+rem 1.5) 确认 distN 里没有冒烟测试的临时文件（_srv*.log / _trend.txt 等），否则会被打进安装包
+
+rem 2) 重新采集冻结目录 -> appfiles.wxs（注意 -var 与 -dr）
+buildtools\wix311\heat.exe dir dist10\volmon-win ^
+  -cg AppFiles -gg -sfrag -sreg -srd -scom -dr INSTALLFOLDER -var DistSrc -out appfiles.wxs
+
+rem 3) 后处理（相对路径 + Win64 + 稳定 File Id），脚本已固化：
+venv\Scripts\python.exe packaging\postprocess_appfiles.py dist10
+
+rem 4) 编译 + 链接（用 -loc 固定中文代码页 GBK/936）
+buildtools\wix311\candle.exe volmon.wxs appfiles.wxs -out obj\ -ext WixUIExtension
+buildtools\wix311\light.exe -ext WixUIExtension -loc volmon.zh-CN.wxl ^
+  obj\volmon.wixobj obj\appfiles.wixobj -o volmon-win-x64.msi -spdb
+
+rem 5) 打交付 zip（MSI + 文档 + 源码 + 构建脚本）到桌面
+venv\Scripts\python.exe packaging\make_zip.py
+```
+
+> 换成新版本目录（如 `dist10`）时，记得同步改两处：`volmon.wxs` 里 `Icon SourceFile="dist10/..."`，
+> 以及后处理脚本的参数（脚本会自动把 `Source=` 指到同一目录，避免两边不一致）。
+
+### 版本发布（新版本能原地升级）
+每次交付都要同步升级三处，否则"同版本不同内容"装不上：
+1. `volmon/__init__.py` 的 `__version__`（页面徽章 / CLI 状态条 / 接口都取它）；
+2. `volmon.wxs` 顶部的 `<?define Version = "..." ?>`；
+3. `volmon.wxs` 里 `Product/@Id` **换一个新 GUID**（`UpgradeCode` 保持不变）。
+   配合已有的 `<MajorUpgrade>`，用户直接装新版即可覆盖旧版，不必先手动卸载。
+
+### 必改项说明
+- **中文代码页**：本机构建机若是非中文 ANSI（如 1252），`Product/@Codepage="936"` 会被 link 忽略，必须用 `volmon.zh-CN.wxl`（`Codepage="936"`）+ `light -loc` 才能把中文写入 MSI 字符串表。
+- **`$(DistSrc)` 不能靠 `-d` 绑定**：`heat -var DistSrc` 生成的是 `$(DistSrc)\...`，直接 `-dDistSrc=...` 在 link 阶段不生效；改为在 `appfiles.wxs` 里把 `$(DistSrc)\` 文本替换成相对路径 `dist\volmon-win\`（相对 `.wxs` 所在项目根）最稳妥。
+- **自定义操作选 Type 34**（`FileKey`+`ExeCommand`），不要用裸 `ExeCommand` 或 `Property` 型 Type 50：前者在 WiX 3 需要额外 `BinaryKey/Directory/FileKey/Property` 之一，后者需 DLL 包装（WixQuietExec）。
+- **`msilib` 不可用**：本机所有 Python 都没有 `msilib`，无法用标准库生成 MSI，故走 WiX。
+
+### 验证
+- `dark.exe -x _extract volmon-win-x64.msi` 应能导出约 330+ 个文件（含 `volmon-win.exe`、`_internal\web\index.html`、`_internal\_sounddevice_data\portaudio-binaries\libportaudio64bit.dll`）。
+- 计划任务注册需安装以管理员运行（MSI 提升）；普通用户双击安装会被 UAC 提权。
 
 ---
 

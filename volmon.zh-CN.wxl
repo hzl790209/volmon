@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WixLocalization Culture="zh-CN" Codepage="936"
+                  xmlns="http://schemas.microsoft.com/wix/2006/localization">
+  <!-- 该文件仅用于把安装包数据库代码页固定为 GBK(936)，
+       以便中文产品名/描述正确写入 MSI 字符串表。 -->
+</WixLocalization>

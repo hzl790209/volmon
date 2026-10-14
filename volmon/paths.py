@@ -56,6 +56,28 @@ def data_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def resolve_user_path(p):
+    """把用户在配置里填的路径解析成**绝对路径**。
+
+    网页上的「存储路径」允许用户填绝对路径（如 ``D:\\volmon\\recordings``）或
+    相对路径（如 ``data/recordings``）。这里统一归一化，让下游（日志 handler、
+    数据库、录音写盘）拿到的都是可直接使用的绝对路径。
+
+    规则：
+      - 空值返回 None（表示"该项未设置，用调用方的默认值"）
+      - 先展开环境变量（``%APPDATA%`` / ``$HOME``）与 ``~``
+      - 已是绝对路径：原样返回
+      - 相对路径：以 **data_root()** 为基准解析，而不是依赖进程当前工作目录；
+        这样无论服务从哪个目录被拉起（计划任务、桌面版双击），相对路径都落在同一处。
+    """
+    if not p:
+        return None
+    s = os.path.expandvars(os.path.expanduser(str(p).strip()))
+    if not os.path.isabs(s):
+        s = os.path.join(data_root(), s)
+    return os.path.normpath(s)
+
+
 def setup_runtime():
     """打包后把工作目录切到用户数据目录，让所有相对路径（data/...）自然落对用户目录。
 
@@ -66,6 +88,9 @@ def setup_runtime():
     d = app_support_dir()
     try:
         os.makedirs(d, exist_ok=True)
+        # 把常用的 data/ 子目录也一并建好：launcher 锁文件、配置、日志都在这里，
+        # 否则冻结态首次运行各模块要各自兜底（真机 MSI 首装实测踩坑）。
+        os.makedirs(os.path.join(d, "data"), exist_ok=True)
         os.chdir(d)
     except Exception:
         pass

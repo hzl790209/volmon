@@ -266,18 +266,27 @@ def test_alarm_output_device_comes_from_config():
     assert config_mod.DEFAULTS.get("alarm_output_device") == ""
 
 
-def test_player_plays_to_selected_output_device():
-    """报警声必须能从选定输出设备播放（3.5mm 耳机 / USB 耳机 / 本机扬声器）。"""
+def test_player_plays_to_selected_output_device(monkeypatch):
+    """报警声必须能从选定输出设备播放（3.5mm 耳机 / USB 耳机 / 本机扬声器）。
+
+    选定设备会先被解析成唯一索引（避免 Windows 同名多设备的 Multiple devices found），
+    再传给 sd.play；未选则回退系统默认（device=None）。
+    """
     import pytest
 
     pytest.importorskip("sounddevice")
     import sounddevice as sd
 
+    # 模拟设备名 -> 索引 的解析结果，隔离真实音频设备依赖
+    monkeypatch.setattr(alarm_mod, "resolve_device_id",
+                        lambda d, kind="output": 5 if d else None)
+    monkeypatch.setattr(alarm_mod, "list_matching_indices", lambda d, kind="output": [])
+
     calls = []
     orig = sd.play
     sd.play = lambda *a, **k: calls.append((a, k))
     try:
-        # 选了设备：应传 device=设备名
+        # 选了设备：应传 device=解析后的索引 5
         p = alarm_mod.make_sounddevice_player(device_getter=lambda: "USB 耳机")
         p(0.01)
         # 未选：应传 device=None（系统默认输出）
@@ -287,7 +296,7 @@ def test_player_plays_to_selected_output_device():
         sd.play = orig
 
     assert len(calls) == 2
-    assert calls[0][1].get("device") == "USB 耳机", f"应把选中设备传给 sd.play，实际 {calls[0][1]}"
+    assert calls[0][1].get("device") == 5, f"应把解析后的设备索引传给 sd.play，实际 {calls[0][1]}"
     assert calls[1][1].get("device") is None, "未选择时应使用系统默认输出"
 
 

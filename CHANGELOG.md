@@ -5,7 +5,75 @@
 > **[Windows 开发预览]** 同一份代码已支持编译 Windows 版（产品名 `volmon-win`），无需重写业务逻辑。
 > 平台差异抽象在：`volmon/paths.py`（`%APPDATA%/volmon-win` 数据目录）、`volmon/__init__.py`（平台相关产品名）、
 > `volmon/launcher.py` + `volmon.bat`（跨平台一键启动器）、`winapp.py` + `volmon-win.spec`（Windows 桌面打包）。
-> 详见 `WINDOWS.md`。本预览**未**发布版本号，待 Windows 真机（麦克风）验证后再定版。
+> 详见 `WINDOWS.md`。Windows 版已发布为 **volmon-win 1.0.11**（2026-09-30），更新记录见下方。
+
+## 1.0.11（2026-09-30）
+
+### 修复：网页修改「报警声输出设备」不生效 + 增加显式保存按钮
+- **现象**：MSI 安装后，网页里改了「报警声输出设备」（3.5mm 耳机 / USB 耳机 / 本机扬声器）
+  但报警声仍从原设备出来；且没有明确的"保存"动作，用户无法确认是否真的保存成功。
+- **根因**：
+  1. 报警面板此前是**静默自动保存**（每个控件 `onchange` 就 POST），既无成功/失败反馈，
+     又依赖服务主循环下一轮 `sync_from_config` 才把新设备同步到运行中的告警管理器；
+     在个别机器上用户改完立刻点「试听」，会仍从旧设备出声，表现为"修改不生效"。
+  2. 主「保存设置」按钮的提交体**漏掉了 `alarm_output_device`**，只发输入设备/阈值等，
+     输出设备只能靠自动保存那条路径，链路脆弱。
+- **方案**：
+  1. 后端 `post_config` / `post_schedule` 在写入配置后**立即**调用
+     `alarm.sync_from_config(config.get_all())`，设备变更即时生效，不再等主循环。
+  2. 报警面板新增**「💾 保存报警设置」按钮**：改完开关/时长/输出设备后必须点它才提交，
+     并给出 `✅ 已保存并立即生效：…输出设备：xxx` / `❌ 保存失败：…` 明确反馈；
+     取消原来的静默自动保存（仅保留改动时的即时提示文案）。
+  3. 主「保存设置」按钮的提交体补上 `alarm_output_device`，两条保存路径都覆盖输出设备。
+  4. `GET/POST /api/alarm/test`（试听）现在在返回消息里写明当前生效的输出设备
+     （「已播放试听音（约 2 秒），应从【xxx】发出」），方便用户确认识别是否真的生效。
+- 验证：源码 + 冻结版（dist10）均验证 `POST /api/config` 改设备后
+  `GET /api/alarm/test` 的 `device` 字段即时变为新设备；冻结版 `/` 返回的 HTML
+  含 `saveAlarm`、无 `bindAlarmAutosave`。
+
+## 1.0.10（2026-09-29）
+
+### 修复：CLI 历史趋势区残余频闪（真机录屏复现）
+- **根因**：v1.0.9 已把重绘频率压下来，但 rich `Live` 每次 refresh 本质是**整屏重写**；
+  顶部时钟/当前分贝每秒都在变化，导致从未变化的历史趋势区也跟着每秒被重写一遍。
+  Windows 传统控制台（conhost）重写中文双宽字符行时肉眼可见，录屏逐帧分析可捕捉到
+  说明行出现半重绘的"变暗帧"。
+- **方案**：CLI 实时界面改用**行级 diff 渲染**（`_DiffPainter`）替代 rich `Live`：
+  - 启用 Windows VT 序列（ENABLE_VIRTUAL_TERMINAL_PROCESSING）；
+  - 每帧渲染为 ANSI 行 + 纯文本行，与上一帧逐行比较；
+  - **只重写内容真正变化的行**（VT 光标定位），历史趋势等静态区一个字节都不写；
+  - 内容完全无变化时输出 0 字节；窗口尺寸变化时自动全量重绘。
+- 实测（重定向 20 秒采样）：输出量从整屏方案约 3600 行降到 324 行（↓90%+）；
+  单元验证：变化帧只写 1 行、无变化帧 0 字节、resize 全量重绘正确。
+- `--no-screen` 现在的含义改为"回退 rich Live 兼容渲染"（逃生通道，默认无需使用）；
+  `--fps` 语义不变（刷新上限）。
+
+## 1.0.9（2026-09-29）
+
+### 修复：CLI 历史趋势区频闪（第一轮）+ 命令行入口
+- `volmon-win.exe cli` 无响应：修复 frozen 模式下 `_run("cli")` 自我递归调用，
+  改为进程内 `_cli_inproc()`；新增控制台子系统 `volmon-cli.exe`，命令行直达。
+- CLI 频闪第一轮修复：`Live(auto_refresh=False)` + 内容变化检测 + fps 节流；
+  历史趋势区块**恒定高度**（数据为空也补空行），失败时只改固定提示行不再跳高度；
+  趋势数据改异步拉取（不阻塞渲染）+ 严格节流（失败也计时，杜绝每帧重拉）；
+  `_fit_lines()` 按**显示宽度**裁行（中文双宽算 2 格），保证"作者行数=渲染行数"
+  不变量，杜绝底部趋势被挤出屏幕。
+- `cli` 子命令新增 `--fps`（默认 6）、`--no-screen`；`winapp.py` 补 `trend` 白名单。
+- 打包：PyInstaller 双入口 spec（GUI + console），`Icon` 与快捷方式指向稳定文件。
+
+## 1.0.8（2026-09-29）
+
+### 修复：真机安装后的两处启动报错
+- `launcher._acquire_lock` FileNotFoundError：数据目录未创建（`paths.py` 补 `makedirs`）。
+- `ModuleNotFoundError: No module named 'aiohttp'`：误用托管 venv 的 PyInstaller 打包
+  （缺 aiohttp/sounddevice/psutil，`collect_all()` 静默返回空）。改用项目 venv 构建。
+
+### 新增：MSI 安装包（首个可分发版本）
+- WiX Toolset v3（buildtools\wix311）：heat 采集 onedir → postprocess（相对路径/Win64/
+  稳定 FileId）→ candle/light（-loc 固定 GBK 936 中文）。
+- 计划任务 VolmonMonitor：安装时注册（Type 34 自定义操作），随登录自启后台服务。
+- MajorUpgrade：同 UpgradeCode 换 ProductCode 即可原地覆盖升级，无需先卸载。
+- 桌面/开始菜单快捷方式：主程序 + `Volmon 命令行` (volmon-cli.exe cli)。
 
 ## [volmon-mac 1.0.3] - 2026-09-27（**1.0 补丁**）
 

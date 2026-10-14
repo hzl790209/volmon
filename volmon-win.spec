@@ -18,20 +18,29 @@ hiddenimports = [
     "volmon.cli", "volmon.config", "volmon.logrot", "volmon.mailer",
     "volmon.paths", "volmon.recorder", "volmon.restart", "volmon.schedule",
     "volmon.server", "volmon.sim", "volmon.storage", "volmon.launcher",
+    "volmon.watchdog",
     # 第三方
     "aiohttp", "numpy", "sounddevice", "websockets", "rich",
     "email.mime.application", "email.mime.multipart", "email.mime.text",
     "smtplib", "wave", "sqlite3",
+    # Windows 专属（COM 计划任务 + 进程管理，运行时才 import，必须显式列出）
+    "pywin32", "win32api", "win32con", "win32com", "win32com.client",
+    "win32com.server", "win32com.shell", "pythoncom", "psutil",
 ]
 
-# sounddevice 自带的 PortAudio 动态库（Windows 上是 portaudio.dll）
+# sounddevice 自带的 PortAudio 动态库：Windows 上实际文件名是
+# libportaudio64bit.dll / libportaudio64bit-asio.dll 等，并不存在 portaudio.dll，
+# 必须把整个 portaudio-binaries 目录下的 .dll 都带进包，否则冻结后无法加载音频。
 try:
     import sounddevice
 
     _sd = os.path.dirname(sounddevice.__file__)
-    _pa = os.path.join(_sd, "_sounddevice_data", "portaudio-binaries", "portaudio.dll")
-    if os.path.exists(_pa):
-        binaries.append((_pa, "_sounddevice_data/portaudio-binaries"))
+    _pa_dir = os.path.join(_sd, "_sounddevice_data", "portaudio-binaries")
+    if os.path.isdir(_pa_dir):
+        for _f in os.listdir(_pa_dir):
+            if _f.lower().endswith(".dll"):
+                binaries.append((os.path.join(_pa_dir, _f),
+                                 "_sounddevice_data/portaudio-binaries"))
 except Exception:
     pass
 
@@ -57,6 +66,12 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 # onedir：依赖放在 dist/volmon-win/ 内部，启动快；双击 volmon-win.exe 即用。
 # （Windows 没有 BUNDLE，直接 EXE + COLLECT 即可）
+#
+# 两个入口：
+#   volmon-win.exe  —— GUI 子系统（console=False），双击开浏览器面板
+#   volmon-cli.exe  —— 控制台子系统（console=True），命令行实时监控/脚本调用
+#   分开的原因：GUI 子系统程序从 cmd 启动时不继承控制台，stdout 为 None，
+#   CLI 输出全丢；控制台版天生带窗口，cmd 也会等待其结束，体验正常。
 exe = EXE(
     pyz,
     a.scripts,
@@ -73,8 +88,25 @@ exe = EXE(
     target_arch=None,
 )
 
+exe_cli = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name="volmon-cli",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=True,           # 命令行版：自带控制台窗口
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+)
+
 coll = COLLECT(
     exe,
+    exe_cli,
     a.binaries,
     a.zipfiles,
     a.datas,
