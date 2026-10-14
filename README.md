@@ -17,7 +17,7 @@ Android 为原生 Kotlin 实现（复用 dB 算法与 Web 仪表盘思路）。
 | 平台 | 状态 | 说明 |
 |------|------|------|
 | macOS | ✅ 已发布（volmon-mac 1.0.3，DMG 双击即用） | 桌面端主阵地，详见下文「安装（macOS）」 |
-| Windows | 🧪 开发预览 | 同一套 Python 后端，需自行打包 `.exe`，详见 [WINDOWS.md](./WINDOWS.md) |
+| Windows | ✅ 已发布（volmon-win 1.0.11，源码/便携运行） | 同一套 Python 后端；MSI 安装包待发布，详见 [WINDOWS.md](./WINDOWS.md) |
 | Android | 🧪 开发预览 | 原生 Kotlin + Compose，详见 `volmon-android/` 目录与 [音量监控软件_PRD.md](./音量监控软件_PRD.md) |
 | Web 面板 | ✅ 内置 | `web/index.html` 单体页面，WebSocket 实时推送，三端通用 |
 
@@ -498,9 +498,11 @@ python main.py logs --hours 24 --export-alerts data/alerts_x.csv  # 导出超量
   给运行服务的终端（Terminal/iTerm）开启权限，然后用**该终端**重启服务
   （`volmon serve`）。**恢复读数后务必重新校准**——在静音状态下做的校准结果无效。
 
-## Windows 版（开发预览）
+## Windows 版（volmon-win 1.0.11）
 
 同一份代码可编译出 Windows 版（产品名 **`volmon-win`**），无需重写业务逻辑。平台差异（数据目录、入口、打包、后台服务管理）已抽象在少量专属文件中：
+
+> **MSI 安装包待发布**：仓库已含 Windows 版完整源码（v1.0.11），但 MSI 尚未在本仓库发布。你可源码运行（`start.bat` / `volmon.bat`）或自行构建便携 EXE（`build_win.bat`）；需要 MSI 时按 [WINDOWS.md](./WINDOWS.md) §4.1 在 Windows + WiX Toolset 上构建。
 
 - 一键命令：`volmon.bat`（对应 macOS 的 `volmon`）
 - 桌面入口：`winapp.py`（对应 `macapp.py`）；打包配置：`volmon-win.spec`
