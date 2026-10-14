@@ -2,7 +2,7 @@
 
 本说明适用于把本项目（macOS 版 `volmon-mac` 的同一份代码）拿到 Windows 上做 **Windows 版（产品名 `volmon-win`）** 的开发与分发。代码结构已做了跨平台抽象，Windows 与 macOS 共用同一套 `volmon/` 包、`web/`、`main.py`，只需少量 Windows 专属胶水文件。
 
-> **📦 安装包状态（2026-10-14）**：本仓库已包含 Windows 版完整源码（产品名 `volmon-win`，版本 **1.0.11**），但 **MSI 安装包尚未在本仓库发布**。当前在 Windows 上运行有两种方式：
+> **📦 安装包状态（2026-10-14）**：本仓库已包含 Windows 版完整源码（产品名 `volmon-win`，版本 **1.0.11**），且 **MSI 安装包已发布**（见 [GitHub Release v1.0.11](https://github.com/hzl790209/volmon/releases/tag/v1.0.11)）。当前在 Windows 上运行有两种方式：
 > 1. **源码 / 便携运行**：直接 `start.bat` 或 `volmon.bat`（详见下文 §2）；
 > 2. **自行构建便携 EXE**：`build_win.bat` 产出 `dist\volmon-win\volmon-win.exe`（onedir，双击即用，见 §4）。
 >
